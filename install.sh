@@ -10,6 +10,7 @@
 #   ./install.sh agents/planning-agents  # 특정 스킬만 설치
 #   ./install.sh --list              # 사용 가능한 스킬 목록
 #   ./install.sh --uninstall agents  # 삭제
+#   ./install.sh --link-static       # static 디렉토리 심링크
 #
 
 set -e
@@ -25,6 +26,8 @@ NC='\033[0m' # No Color
 # 기본값
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR="${HOME}/.claude/skills"
+STATIC_TARGET="${HOME}/.agents"
+STATIC_SOURCE="${SCRIPT_DIR}/static"
 PREFIX=""
 POSTFIX=""
 COPY_MODE=false
@@ -32,12 +35,49 @@ DRY_RUN=false
 UNINSTALL=false
 LIST_MODE=false
 QUIET=false
+LINK_STATIC=false
+UNLINK_STATIC=false
 
-# 그룹 정의 (GROUPS는 bash 내장 변수이므로 SKILL_GROUPS 사용)
-SKILL_GROUPS=("agents" "development" "business")
+# 제외 디렉토리 (스킬 그룹으로 인식하지 않음)
+EXCLUDE_DIRS=("static" ".git" ".github" ".agents" "node_modules" "__pycache__")
+
+# 스킬 그룹 동적 탐색
+get_skill_groups() {
+    local groups=()
+    for dir in "${SCRIPT_DIR}"/*/; do
+        local dirname=$(basename "$dir")
+        local excluded=false
+
+        # 제외 목록 확인
+        for exclude in "${EXCLUDE_DIRS[@]}"; do
+            if [[ "$dirname" == "$exclude" ]]; then
+                excluded=true
+                break
+            fi
+        done
+
+        # 숨김 디렉토리 제외
+        if [[ "$dirname" == .* ]]; then
+            excluded=true
+        fi
+
+        # 스킬이 하나라도 있는 디렉토리만 그룹으로 인식
+        if [[ "$excluded" == "false" && -d "$dir" ]]; then
+            for skill_dir in "$dir"/*/; do
+                if [[ -f "${skill_dir}SKILL.md" ]]; then
+                    groups+=("$dirname")
+                    break
+                fi
+            done
+        fi
+    done
+    echo "${groups[@]}"
+}
 
 # 사용법 출력
 usage() {
+    local groups=($(get_skill_groups))
+
     cat << EOF
 사용법: $(basename "$0") [옵션] [그룹/스킬...]
 
@@ -59,6 +99,10 @@ usage() {
   --postfix POSTFIX 스킬 이름 뒤에 접미사 추가 (예: -dev)
   -t, --target DIR 대상 디렉토리 지정 (기본: ~/.claude/skills)
 
+Static 관리:
+  --link-static    static/ -> ~/.agents 심링크 생성
+  --unlink-static  ~/.agents 심링크 제거
+
 예시:
   $(basename "$0")                          # 전체 설치
   $(basename "$0") agents                   # agents 그룹만 설치
@@ -67,13 +111,17 @@ usage() {
   $(basename "$0") --prefix "my-" agents    # 접두사 붙여서 설치
   $(basename "$0") --uninstall agents       # agents 그룹 삭제
   $(basename "$0") --list                   # 스킬 목록 표시
+  $(basename "$0") --link-static            # static 심링크 설정
 
-그룹:
-  agents       AI 에이전트 관련 스킬 (multi-llm-agent, planning-agents)
-  development  개발 도구 스킬 (git-commit-pr, context-manager)
-  business     비즈니스 스킬 (proposal-analyzer)
-
+그룹 (자동 탐색):
 EOF
+    for group in "${groups[@]}"; do
+        local skills=($(get_skills_in_group "$group"))
+        echo "  ${group}       (${#skills[@]}개 스킬)"
+    done
+    echo ""
+    echo "제외 디렉토리: ${EXCLUDE_DIRS[*]}"
+    echo ""
     exit 0
 }
 
@@ -116,7 +164,8 @@ get_skills_in_group() {
 
 # 모든 스킬 목록
 get_all_skills() {
-    for group in "${SKILL_GROUPS[@]}"; do
+    local groups=($(get_skill_groups))
+    for group in "${groups[@]}"; do
         for skill in $(get_skills_in_group "$group"); do
             echo "${group}/${skill}"
         done
@@ -125,12 +174,14 @@ get_all_skills() {
 
 # 스킬 목록 출력
 list_skills() {
+    local groups=($(get_skill_groups))
+
     echo ""
     echo -e "${CYAN}사용 가능한 스킬${NC}"
     echo "================="
     echo ""
 
-    for group in "${SKILL_GROUPS[@]}"; do
+    for group in "${groups[@]}"; do
         local group_dir="${SCRIPT_DIR}/${group}"
         if [[ -d "$group_dir" ]]; then
             echo -e "${YELLOW}${group}/${NC}"
@@ -151,11 +202,83 @@ list_skills() {
         fi
     done
 
+    # Static 상태 표시
+    echo -e "${CYAN}Static 디렉토리${NC}"
+    echo "================="
+    if [[ -L "$STATIC_TARGET" ]]; then
+        local link_target=$(readlink "$STATIC_TARGET")
+        echo -e "  ${GREEN}심링크 활성${NC}: ~/.agents -> $link_target"
+    elif [[ -d "$STATIC_TARGET" ]]; then
+        echo -e "  ${YELLOW}일반 디렉토리${NC}: ~/.agents (심링크 아님)"
+    else
+        echo -e "  ${RED}없음${NC}: ~/.agents가 존재하지 않음"
+    fi
+    echo ""
+
     echo "설치 예시:"
     echo "  ./install.sh all              # 전체 설치"
     echo "  ./install.sh agents           # agents 그룹만"
     echo "  ./install.sh agents/planning-agents  # 특정 스킬만"
+    echo "  ./install.sh --link-static    # static 심링크 설정"
     echo ""
+}
+
+# Static 심링크 생성
+link_static() {
+    if [[ ! -d "$STATIC_SOURCE" ]]; then
+        log_error "static 디렉토리가 없습니다: $STATIC_SOURCE"
+        log_info "먼저 static 디렉토리를 생성하세요: mkdir -p $STATIC_SOURCE"
+        exit 1
+    fi
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        if [[ -e "$STATIC_TARGET" ]]; then
+            log_dry "기존 ~/.agents 제거"
+        fi
+        log_dry "심링크 생성: ~/.agents -> $STATIC_SOURCE"
+        return
+    fi
+
+    # 기존 경로 처리
+    if [[ -L "$STATIC_TARGET" ]]; then
+        log_warn "기존 심링크 제거: $STATIC_TARGET"
+        rm "$STATIC_TARGET"
+    elif [[ -d "$STATIC_TARGET" ]]; then
+        log_warn "기존 디렉토리를 백업합니다: ${STATIC_TARGET}.backup"
+        mv "$STATIC_TARGET" "${STATIC_TARGET}.backup"
+    fi
+
+    # 심링크 생성
+    ln -s "$STATIC_SOURCE" "$STATIC_TARGET"
+    log_success "심링크 생성됨: ~/.agents -> $STATIC_SOURCE"
+}
+
+# Static 심링크 제거
+unlink_static() {
+    if [[ "$DRY_RUN" == "true" ]]; then
+        if [[ -L "$STATIC_TARGET" ]]; then
+            log_dry "심링크 제거: $STATIC_TARGET"
+        else
+            log_dry "심링크가 아님: $STATIC_TARGET"
+        fi
+        return
+    fi
+
+    if [[ -L "$STATIC_TARGET" ]]; then
+        rm "$STATIC_TARGET"
+        log_success "심링크 제거됨: ~/.agents"
+
+        # 백업이 있으면 복원 제안
+        if [[ -d "${STATIC_TARGET}.backup" ]]; then
+            log_info "백업 디렉토리 발견: ${STATIC_TARGET}.backup"
+            log_info "복원하려면: mv ${STATIC_TARGET}.backup $STATIC_TARGET"
+        fi
+    elif [[ -d "$STATIC_TARGET" ]]; then
+        log_warn "심링크가 아닌 일반 디렉토리입니다: $STATIC_TARGET"
+        log_info "수동으로 제거하세요: rm -rf $STATIC_TARGET"
+    else
+        log_warn "~/.agents가 존재하지 않습니다"
+    fi
 }
 
 # 스킬 설치
@@ -247,9 +370,10 @@ install_group() {
 
 # 전체 설치
 install_all() {
+    local groups=($(get_skill_groups))
     log_info "전체 스킬 설치 중..."
 
-    for group in "${SKILL_GROUPS[@]}"; do
+    for group in "${groups[@]}"; do
         if [[ -d "${SCRIPT_DIR}/${group}" ]]; then
             install_group "$group"
         fi
@@ -296,6 +420,14 @@ while [[ $# -gt 0 ]]; do
             TARGET_DIR="$2"
             shift 2
             ;;
+        --link-static)
+            LINK_STATIC=true
+            shift
+            ;;
+        --unlink-static)
+            UNLINK_STATIC=true
+            shift
+            ;;
         -*)
             log_error "알 수 없는 옵션: $1"
             echo "도움말: $(basename "$0") --help"
@@ -308,6 +440,17 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Static 링크 모드
+if [[ "$LINK_STATIC" == "true" ]]; then
+    link_static
+    exit 0
+fi
+
+if [[ "$UNLINK_STATIC" == "true" ]]; then
+    unlink_static
+    exit 0
+fi
+
 # 목록 모드
 if [[ "$LIST_MODE" == "true" ]]; then
     list_skills
@@ -318,6 +461,9 @@ fi
 if [[ "$DRY_RUN" == "false" ]]; then
     mkdir -p "$TARGET_DIR"
 fi
+
+# 스킬 그룹 가져오기
+SKILL_GROUPS=($(get_skill_groups))
 
 # 헤더 출력
 if [[ "$QUIET" == "false" && "$DRY_RUN" == "false" ]]; then
