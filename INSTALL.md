@@ -1,264 +1,297 @@
 # Installation Guide
 
-Quick guide to installing and managing skills from this repository.
+스킬을 설치하고 관리하는 가이드입니다.
 
 ## Prerequisites
 
-- Claude Code installed
-- Git (for cloning and version control)
-- Python 3.8+ (for scripts)
+- Claude Code 설치됨
+- Git (클론 및 버전 관리용)
+- Bash 4.0+ (대부분의 macOS/Linux에 기본 포함)
 
 ## Quick Start
 
 ```bash
-# Clone the repository
+# 저장소 클론
 git clone <repository-url> ~/workspace/agent-skills
 cd ~/workspace/agent-skills
 
-# Install all skills
-python install.py
+# 전체 설치
+./install.sh
 
-# Or install specific skills
-python install.py context-manager multi-llm-agent
+# 특정 그룹만 설치
+./install.sh agents
+
+# 특정 스킬만 설치
+./install.sh agents/planning-agents
+```
+
+## Directory Structure
+
+스킬은 주제별로 그룹화되어 있습니다:
+
+```
+~/workspace/agent-skills/
+├── install.sh                    # 설치 스크립트
+├── agents/                       # AI 에이전트 관련
+│   ├── multi-llm-agent/
+│   └── planning-agents/
+├── development/                  # 개발 도구
+│   ├── context-manager/
+│   └── git-commit-pr/
+└── business/                     # 비즈니스
+    └── proposal-analyzer/
 ```
 
 ## Using the Install Script
 
-### Basic Installation
+### 스킬 목록 보기
 
 ```bash
-# Install all skills (symlink mode)
-python install.py
-
-# Install specific skills only
-python install.py context-manager git-commit-pr
-
-# View available skills
-python install.py --list
+./install.sh --list
 ```
 
-### Naming Options (Prefix/Postfix)
+출력 예시:
+```
+agents/
+  ├── multi-llm-agent
+  └── planning-agents
 
-Use prefix and postfix to organize or differentiate skill installations:
+development/
+  ├── context-manager
+  └── git-commit-pr
 
-```bash
-# Add prefix (e.g., my-context-manager)
-python install.py --prefix "my-"
-
-# Add postfix (e.g., context-manager-dev)
-python install.py --postfix "-dev"
-
-# Combine both (e.g., team-context-manager-v2)
-python install.py --prefix "team-" --postfix "-v2"
+business/
+  └── proposal-analyzer
 ```
 
-This is useful when:
-- Running multiple versions of the same skill
-- Separating personal vs team skills
-- Testing new versions alongside stable ones
-
-### Installation Methods
+### 설치 옵션
 
 ```bash
-# Symlink (default) - changes sync automatically
-python install.py
+# 전체 설치
+./install.sh
+./install.sh all
 
-# Copy - independent installation
-python install.py --copy
+# 그룹 단위 설치
+./install.sh agents                    # agents 그룹만
+./install.sh agents development        # 여러 그룹
+
+# 개별 스킬 설치
+./install.sh agents/planning-agents
+./install.sh development/git-commit-pr business/proposal-analyzer
 ```
 
-### Custom Target Directory
+### 네이밍 옵션 (Prefix/Postfix)
+
+스킬 이름에 접두사/접미사를 추가할 수 있습니다:
 
 ```bash
-# Install to custom location
-python install.py --target-dir ~/.claude/skills-dev
+# 접두사 추가 (예: my-planning-agents)
+./install.sh --prefix "my-" agents
 
-# Install to different Claude Code instance
-python install.py -t /path/to/other/.claude/skills
+# 접미사 추가 (예: planning-agents-dev)
+./install.sh --postfix "-dev" agents
+
+# 둘 다 (예: team-planning-agents-v2)
+./install.sh --prefix "team-" --postfix "-v2"
 ```
 
-### Dry Run (Preview)
+활용 예:
+- 여러 버전 동시 운용
+- 개인/팀 스킬 구분
+- 테스트 버전과 안정 버전 분리
+
+### 설치 방법
 
 ```bash
-# Preview what will happen without making changes
-python install.py --dry-run
-python install.py --prefix "test-" --dry-run
+# 심볼릭 링크 (기본) - 변경사항 자동 동기화
+./install.sh
+
+# 복사 - 독립적인 설치본
+./install.sh --copy
 ```
 
-### Uninstall
+### 대상 디렉토리 변경
 
 ```bash
-# Remove all skills installed from this repository
-python install.py --uninstall
+# 커스텀 위치에 설치
+./install.sh --target ~/.claude/skills-dev
 
-# Remove specific skills
-python install.py --uninstall context-manager
+# 다른 Claude Code 인스턴스에 설치
+./install.sh -t /path/to/other/.claude/skills
+```
 
-# Remove with prefix (if installed with prefix)
-python install.py --prefix "my-" --uninstall
+### 미리보기 (Dry Run)
+
+```bash
+# 실제 변경 없이 미리보기
+./install.sh --dry-run
+./install.sh --dry-run agents
+./install.sh --prefix "test-" --dry-run
+```
+
+### 삭제
+
+```bash
+# 전체 삭제
+./install.sh --uninstall
+
+# 특정 그룹 삭제
+./install.sh --uninstall agents
+
+# 특정 스킬 삭제
+./install.sh --uninstall agents/planning-agents
+
+# 접두사 붙여서 설치한 경우
+./install.sh --prefix "my-" --uninstall
 ```
 
 ## Command Reference
 
 ```
-usage: install.py [-h] [--prefix PREFIX] [--postfix POSTFIX]
-                  [--target-dir TARGET_DIR] [--source-dir SOURCE_DIR]
-                  [--copy] [--dry-run] [--uninstall] [--list] [--quiet]
-                  [skills ...]
+사용법: install.sh [옵션] [그룹/스킬...]
 
-options:
-  skills                  Skills to install/uninstall (default: all)
-  --prefix PREFIX         Add prefix to skill names (e.g., 'my-')
-  --postfix, --suffix     Add postfix to skill names (e.g., '-dev')
-  --target-dir, -t        Target directory (default: ~/.claude/skills)
-  --source-dir, -s        Source directory (default: script location)
-  --copy, -c              Copy files instead of symlink
-  --dry-run, -n           Preview only, no actual changes
-  --uninstall, -u         Uninstall mode
-  --list, -l              List available skills
-  --quiet, -q             Minimal output
+옵션:
+  -h, --help       도움말 표시
+  -l, --list       사용 가능한 스킬 목록 표시
+  -u, --uninstall  스킬 삭제
+  -c, --copy       심볼릭 링크 대신 복사
+  -n, --dry-run    실제 변경 없이 미리보기
+  -q, --quiet      최소 출력
+  --prefix PREFIX  스킬 이름 앞에 접두사 추가
+  --postfix POSTFIX 스킬 이름 뒤에 접미사 추가
+  -t, --target DIR 대상 디렉토리 지정 (기본: ~/.claude/skills)
+
+그룹:
+  agents       AI 에이전트 스킬 (multi-llm-agent, planning-agents)
+  development  개발 도구 스킬 (git-commit-pr, context-manager)
+  business     비즈니스 스킬 (proposal-analyzer)
 ```
 
 ## Examples
 
-### Scenario 1: Development Setup
+### 시나리오 1: 개발 환경 설정
 
-Keep skills synced with your repository:
-
-```bash
-# Install via symlinks (default)
-python install.py
-
-# Edit skills in repository
-vim context-manager/SKILL.md
-
-# Changes immediately available in Claude Code
-```
-
-### Scenario 2: Separate Dev and Production
+저장소와 동기화된 상태로 스킬 사용:
 
 ```bash
-# Production skills
-python install.py --postfix "-stable"
+# 심볼릭 링크로 설치 (기본)
+./install.sh
 
-# Development skills (symlinked for editing)
-python install.py --postfix "-dev"
+# 저장소에서 스킬 수정
+vim agents/planning-agents/SKILL.md
+
+# 변경사항 즉시 반영됨
 ```
 
-### Scenario 3: Team Shared Skills
+### 시나리오 2: 개발/운영 분리
 
 ```bash
-# Personal copy
-python install.py --prefix "june-"
+# 운영용 (안정 버전)
+./install.sh --postfix "-stable" --copy
 
-# Team shared version
-python install.py --prefix "team-" --copy
+# 개발용 (심볼릭 링크로 편집 가능)
+./install.sh --postfix "-dev"
 ```
 
-### Scenario 4: Testing New Versions
+### 시나리오 3: 팀 공유 스킬
 
 ```bash
-# Keep current version
-python install.py --postfix "-v1"
+# 개인용
+./install.sh --prefix "june-"
 
-# Test new version
-python install.py --postfix "-v2-test" context-manager
+# 팀 공유용
+./install.sh --prefix "team-" --copy
 ```
 
-## Directory Structure
+### 시나리오 4: 특정 그룹만 설치
 
-```
-~/workspace/agent-skills/         # Source repository
-├── install.py                    # Installation script
-├── context-manager/              # Skill: context-manager
-├── git-commit-pr/                # Skill: git-commit-pr
-├── multi-llm-agent/              # Skill: multi-llm-agent
-└── proposal-analyzer/            # Skill: proposal-analyzer
+```bash
+# AI 에이전트 관련만 설치
+./install.sh agents
 
-~/.claude/skills/                 # Claude Code skills directory
-├── context-manager -> ~/workspace/agent-skills/context-manager
-├── my-context-manager -> ~/workspace/agent-skills/context-manager
-└── context-manager-dev/          # Copied version
+# 개발 도구만 설치
+./install.sh development
 ```
 
 ## Manual Installation
 
-If you prefer manual installation:
+스크립트 없이 수동 설치:
 
-### Symlink (Recommended for Development)
+### 심볼릭 링크 (개발용 권장)
 
 ```bash
 cd ~/.claude/skills
-ln -s ~/workspace/agent-skills/context-manager context-manager
+ln -s ~/workspace/agent-skills/agents/planning-agents planning-agents
 ```
 
-### Copy
+### 복사
 
 ```bash
-cp -r ~/workspace/agent-skills/context-manager ~/.claude/skills/
+cp -r ~/workspace/agent-skills/agents/planning-agents ~/.claude/skills/
 ```
 
 ## Verifying Installation
 
 ```bash
-# List installed skills
+# 설치된 스킬 목록
 ls -la ~/.claude/skills/
 
-# Check skill metadata
-head -n 5 ~/.claude/skills/context-manager/SKILL.md
+# 스킬 메타데이터 확인
+head -n 5 ~/.claude/skills/planning-agents/SKILL.md
 
-# Test script (if applicable)
-python ~/.claude/skills/context-manager/scripts/find_context.py --help
+# 스크립트 테스트 (해당되는 경우)
+python ~/.claude/skills/planning-agents/scripts/planner.py --help
 ```
 
 ## Troubleshooting
 
-### Skill Not Recognized
+### 스킬이 인식되지 않음
 
-1. Verify SKILL.md frontmatter:
+1. SKILL.md frontmatter 확인:
    ```bash
-   head -n 10 ~/.claude/skills/context-manager/SKILL.md
+   head -n 10 ~/.claude/skills/planning-agents/SKILL.md
    ```
-   Should have:
+   다음 형식이어야 함:
    ```yaml
    ---
-   name: context-manager
+   name: planning-agents
    description: ...
    ---
    ```
 
-2. Check permissions:
+2. 권한 확인:
    ```bash
-   ls -la ~/.claude/skills/context-manager/
+   ls -la ~/.claude/skills/planning-agents/
    ```
 
-### Broken Symlink
+### 심볼릭 링크 깨짐
 
 ```bash
-# Remove and reinstall
-python install.py --uninstall context-manager
-python install.py context-manager
+# 삭제 후 재설치
+./install.sh --uninstall agents/planning-agents
+./install.sh agents/planning-agents
 ```
 
-### Permission Denied on Scripts
+### 스크립트 권한 오류
 
 ```bash
 chmod +x ~/.claude/skills/*/scripts/*.py
+chmod +x ~/.claude/skills/*/scripts/*.sh
 ```
 
 ## Syncing Across Machines
 
 ```bash
-# Machine A: push changes
+# Machine A: 변경사항 푸시
 cd ~/workspace/agent-skills
 git add . && git commit -m "Update skills" && git push
 
-# Machine B: pull and reinstall
+# Machine B: 풀 및 재설치
 cd ~/workspace/agent-skills
 git pull
-python install.py
+./install.sh
 ```
 
 ---
 
-**For more information**, see [README.md](README.md)
+**추가 정보**: [README.md](README.md) 참고
