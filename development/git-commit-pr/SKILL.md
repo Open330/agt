@@ -9,7 +9,7 @@ description: Git 커밋 및 PR 생성 가이드. 사용자가 커밋, commit, PR
 
 커밋 또는 PR 생성 요청이 들어오면 **반드시** 다음을 먼저 수행합니다:
 
-1. **개발자 프로필 읽기**: `~/.agents/ME.md` 파일을 읽습니다
+1. **개발자 프로필 읽기**: `~/.agents/WHOAMI.md` 파일을 읽습니다
 2. **보안 규칙 읽기**: `~/.agents/SECURITY.md` 파일을 읽습니다
 3. 프로필에서 커밋/PR 관련 규칙, 선호도, 스타일을 확인합니다
 4. 해당 규칙에 따라 커밋 메시지 또는 PR을 작성합니다
@@ -25,7 +25,7 @@ description: Git 커밋 및 PR 생성 가이드. 사용자가 커밋, commit, PR
 ## Instructions
 
 ### 커밋 생성 시
-1. `~/.agents/ME.md` 파일을 읽어 개발자의 커밋 규칙 확인
+1. `~/.agents/WHOAMI.md` 파일을 읽어 개발자의 커밋 규칙 확인
 2. `git status`로 변경 파일 확인
 3. `git diff`로 변경 내용 확인
 4. `git log -3 --oneline`으로 최근 커밋 스타일 참고
@@ -33,7 +33,7 @@ description: Git 커밋 및 PR 생성 가이드. 사용자가 커밋, commit, PR
 6. 민감한 파일(.env, credentials 등) 커밋 제외
 
 ### PR 생성 시
-1. `~/.agents/ME.md` 파일을 읽어 개발자의 PR 규칙 확인
+1. `~/.agents/WHOAMI.md` 파일을 읽어 개발자의 PR 규칙 확인
 2. 현재 브랜치 상태 확인
 3. 베이스 브랜치와의 diff 확인: `git diff main...HEAD`
 4. 모든 커밋 내용 확인: `git log main..HEAD --oneline`
