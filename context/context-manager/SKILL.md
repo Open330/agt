@@ -172,6 +172,148 @@ The skill uses a weighted scoring system:
 - Recently modified files get a boost
 - Prioritize active work areas
 
+## Examples
+
+### 예시 1: 프로젝트 시작 시 컨텍스트 로드
+
+```
+사용자: 모니터링 기능 개선해줘
+
+Claude: (context-manager 활성화)
+
+📂 컨텍스트 디렉토리 확인 중...
+✓ context/ 디렉토리 발견
+
+🔍 관련 문서 검색 중...
+키워드: "모니터링", "monitoring"
+작업 유형: implementation
+
+📄 로드된 컨텍스트:
+1. context/monitoring/architecture.md (점수: 0.92)
+2. context/monitoring/metrics_guide.md (점수: 0.85)
+3. context/planning/monitoring_roadmap.md (점수: 0.78)
+
+📋 요약:
+- 현재 Prometheus + Grafana 스택 사용 중
+- 메트릭 수집 주기: 30초
+- 다음 마일스톤: 알림 시스템 구축
+
+이제 모니터링 개선 작업을 시작하겠습니다.
+```
+
+### 예시 2: 컨텍스트 디렉토리 없는 경우
+
+```
+사용자: 새 기능 구현해줘
+
+Claude: (context-manager 활성화)
+
+📂 컨텍스트 디렉토리 확인 중...
+⚠️ context/ 디렉토리가 없습니다.
+
+프로젝트 문서화를 위해 컨텍스트 구조를 생성할까요?
+
+권장 구조:
+context/
+├── planning/       # 기획, 로드맵
+├── architecture/   # 시스템 설계
+├── guides/         # 가이드 문서
+└── operations/     # 운영, 트러블슈팅
+
+[Y] 생성 / [N] 건너뛰기
+```
+
+### 예시 3: 작업 완료 후 컨텍스트 업데이트
+
+```
+사용자: (기능 구현 완료 후) 끝났어
+
+Claude: 기능 구현이 완료되었습니다.
+
+📝 컨텍스트 업데이트 중...
+
+업데이트된 문서:
+- context/planning/implementation_status.md
+  └─ "사용자 인증 기능" 상태: ✅ 완료
+
+새로 생성된 문서:
+- context/architecture/auth_design.md
+  └─ JWT 기반 인증 아키텍처 문서화
+
+✓ 컨텍스트 업데이트 완료
+```
+
+### 예시 4: 버그 수정 시 컨텍스트 활용
+
+```
+사용자: 로그인 안 되는 버그 수정해줘
+
+Claude: (context-manager 활성화)
+
+🔍 관련 문서 검색 중...
+키워드: "로그인", "login", "인증"
+작업 유형: bugfix
+
+📄 로드된 컨텍스트:
+1. context/operations/known_issues.md (점수: 0.88)
+2. context/architecture/auth_design.md (점수: 0.82)
+
+📋 발견된 관련 정보:
+- known_issues.md에 "세션 만료 후 리다이렉트 실패" 이슈 기록됨
+- 해결 방안: refreshToken 로직 확인 필요
+
+이 정보를 바탕으로 버그를 수정하겠습니다.
+```
+
+---
+
+## Troubleshooting
+
+### 컨텍스트 검색 결과 없음
+
+```
+문제: 관련 컨텍스트를 찾지 못함
+
+해결:
+1. 키워드를 더 일반적으로 확장
+2. 카테고리 디렉토리 직접 확인
+3. README.md가 있으면 먼저 로드
+```
+
+### 너무 많은 문서 로드
+
+```
+문제: 관련 문서가 너무 많아 토큰 낭비
+
+해결:
+1. 상위 3-5개 문서만 로드
+2. 문서 요약 먼저 확인
+3. 필요한 섹션만 선택적 로드
+```
+
+### 오래된 컨텍스트
+
+```
+문제: 로드된 문서가 현재 코드와 불일치
+
+해결:
+1. git log로 최근 변경 확인
+2. 사용자에게 업데이트 필요 여부 질문
+3. 작업 완료 후 컨텍스트 업데이트
+```
+
+### 스크립트 실행 오류
+
+```bash
+# find_context.py 오류 시
+pip install pyyaml
+
+# 권한 오류 시
+chmod +x scripts/*.py
+```
+
+---
+
 ## Best Practices
 
 **DO:**
@@ -187,6 +329,8 @@ The skill uses a weighted scoring system:
 - Use date-based filenames (git tracks history)
 - Load entire context/ directory (be selective)
 - Forget to update implementation status
+
+---
 
 ## Resources
 
