@@ -1,0 +1,30 @@
+# Build artifacts
+target/
+npm/bin/agt
+npm/bin/agt.exe
+npm/platforms/*/bin/agt
+npm/platforms/*/bin/agt.exe
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Secrets / env files
+.env
+.env.*
+
+# Key/cert files
+*.pem
+*.key
+*.p12
+*.pfx
