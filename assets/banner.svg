@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 500" width="1500" height="500">
+  <defs>
+    <linearGradient id="grad" gradientUnits="userSpaceOnUse" x1="130" y1="0" x2="480" y2="0">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="50%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#ef4444"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1500" height="500" fill="#151b28"/>
+
+  <!-- Logo: A shape with inner cutout -->
+  <path fill-rule="evenodd" fill="url(#grad)" d="
+    M 130,337 L 260,95 L 305,95 L 305,204 L 218,337 Z
+    M 193,274 L 253,179 L 281,179 L 225,274 Z
+  "/>
+
+  <!-- Logo: Top bar connecting A-G-T -->
+  <rect x="295" y="95" width="186" height="49" fill="url(#grad)"/>
+
+  <!-- Logo: G body (L-shape: tongue + right wall) -->
+  <path fill="url(#grad)" d="M 295,190 L 351,190 L 351,270 L 330,270 L 330,214 L 295,214 Z"/>
+
+  <!-- Logo: T vertical stroke -->
+  <rect x="386" y="144" width="42" height="193" fill="url(#grad)"/>
+
+  <!-- Tagline -->
+  <text x="560" y="255" fill="#94a3b8" font-family="Inter, -apple-system, system-ui, sans-serif" font-size="32" font-weight="400" dominant-baseline="middle">A modular toolkit for extending AI coding agents</text>
+</svg>
