@@ -199,6 +199,15 @@ _agt_skill_uninstall() {{
 _agt_skill_which() {{
     _arguments '1:skill name:_agt_skill_names'
 }}
+
+_agt_skill_update() {{
+    _arguments \
+        '1:skill name:_agt_skill_names' \
+        '-g[Global only]' \
+        '--global[Global only]' \
+        '-l[Local only]' \
+        '--local[Local only]'
+}}
 "#);
 }
 
@@ -234,7 +243,7 @@ _agt_enhanced() {{
     # Detect context: agt skill <subcommand> <NAME>
     if [[ "${{words[1]}}" == "skill" ]] && [[ $cword -ge 3 ]]; then
         case "${{words[2]}}" in
-            install|uninstall|which)
+            install|uninstall|which|update)
                 if [[ $cword -eq 3 ]] && [[ "$cur" != -* ]]; then
                     _agt_dynamic_complete skill
                     return
@@ -258,7 +267,7 @@ fn print_fish_completions(base: &str) {
 complete -c agt -n '__fish_seen_subcommand_from persona; and __fish_seen_subcommand_from review install uninstall show which' -xa '(agt complete-names persona 2>/dev/null)'
 
 # Dynamic completions for skill names
-complete -c agt -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from install uninstall which' -xa '(agt complete-names skill 2>/dev/null)'
+complete -c agt -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from install uninstall which update' -xa '(agt complete-names skill 2>/dev/null)'
 "#);
 }
 

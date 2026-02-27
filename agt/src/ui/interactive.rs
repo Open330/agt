@@ -3,6 +3,42 @@ use anyhow::{bail, Context, Result};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, MultiSelect, Select};
 use std::path::Path;
 
+/// Max visible items per page for Select/MultiSelect to prevent rendering bugs
+/// when the list exceeds terminal height.
+const PAGE_SIZE: usize = 15;
+
+/// Truncate a string to fit within terminal width, accounting for prefix overhead.
+/// This prevents line wrapping which causes dialoguer to miscalculate line counts.
+fn truncate_for_display(s: &str, max_width: usize) -> String {
+    // Use unicode-aware width; fall back to byte len for non-displayable
+    let width = console::measure_text_width(s);
+    if width <= max_width {
+        s.to_string()
+    } else {
+        // Truncate by chars until we fit
+        let mut result = String::new();
+        for ch in s.chars() {
+            let next = format!("{}{}", result, ch);
+            if console::measure_text_width(&next) + 1 > max_width {
+                result.push('…');
+                break;
+            }
+            result.push(ch);
+        }
+        result
+    }
+}
+
+/// Get the usable width for display items (terminal width minus dialoguer prefix overhead).
+fn display_width() -> usize {
+    let term_width = console::Term::stderr()
+        .size_checked()
+        .map(|(_h, w)| w as usize)
+        .unwrap_or(80);
+    // dialoguer adds prefix like "  > " or "  ☐ " (~4 chars)
+    term_width.saturating_sub(6)
+}
+
 pub enum InteractiveSelection {
     Profile(String),
     Skills(Vec<(String, String)>),
@@ -52,6 +88,7 @@ fn run_interactive_selector_inner(
         .with_prompt("How would you like to install skills?")
         .items(modes)
         .default(0)
+        .max_length(PAGE_SIZE)
         .interact_opt()
         .context("Failed to render mode selection")?;
 
@@ -74,15 +111,22 @@ fn select_profile(source_dir: &Path, theme: &ColorfulTheme, remote: bool) -> Res
         bail!("No profiles available");
     }
 
+    let max_w = display_width();
     let items: Vec<String> = profiles
         .iter()
-        .map(|(name, desc, count)| format!("{:14} {} ({} skills)", name, desc, count))
+        .map(|(name, desc, count)| {
+            truncate_for_display(
+                &format!("{:14} {} ({} skills)", name, desc, count),
+                max_w,
+            )
+        })
         .collect();
 
     let selection = Select::with_theme(theme)
         .with_prompt("Select a profile")
         .items(&items)
         .default(0)
+        .max_length(PAGE_SIZE)
         .interact_opt()
         .context("Failed to render profile selection")?;
 
@@ -104,6 +148,7 @@ fn browse_by_group(
     }
 
     // Build group display with counts
+    let max_w = display_width();
     let group_items: Vec<String> = groups
         .iter()
         .map(|g| {
@@ -112,7 +157,10 @@ fn browse_by_group(
                 .iter()
                 .filter(|s| local_installed.contains(s) || global_installed.contains(s))
                 .count();
-            format!("{:20} ({}/{} installed)", g, installed, skills.len())
+            truncate_for_display(
+                &format!("{:20} ({}/{} installed)", g, installed, skills.len()),
+                max_w,
+            )
         })
         .collect();
 
@@ -120,6 +168,7 @@ fn browse_by_group(
         .with_prompt("Select a group")
         .items(&group_items)
         .default(0)
+        .max_length(PAGE_SIZE)
         .interact_opt()
         .context("Failed to render group selection")?;
 
@@ -135,7 +184,8 @@ fn browse_by_group(
         bail!("No skills in group '{}'", group);
     }
 
-    // Build skill display with status and description
+    // Build skill display with status and description (truncated to terminal width)
+    let max_w = display_width();
     let items: Vec<String> = skills
         .iter()
         .map(|name| {
@@ -147,11 +197,12 @@ fn browse_by_group(
                 "[ ]"
             };
             let desc = read_skill_description(&source_dir.join(group).join(name));
-            if desc.is_empty() {
+            let raw = if desc.is_empty() {
                 format!("{} {}", tag, name)
             } else {
                 format!("{} {} - {}", tag, name, desc)
-            }
+            };
+            truncate_for_display(&raw, max_w)
         })
         .collect();
 
@@ -161,6 +212,7 @@ fn browse_by_group(
         .with_prompt(format!("{}/  (Space to toggle, Enter to confirm)", group))
         .items(&items)
         .defaults(&defaults)
+        .max_length(PAGE_SIZE)
         .interact_opt()
         .context("Failed to render skill selection")?;
 
@@ -191,6 +243,7 @@ pub fn run_no_source_selector() -> Result<InteractiveSelection> {
         .with_prompt("How would you like to install skills?")
         .items(modes)
         .default(0)
+        .max_length(PAGE_SIZE)
         .interact_opt()
         .context("Failed to render mode selection")?;
 
@@ -245,6 +298,7 @@ pub fn select_personas(
     let theme = ColorfulTheme::default();
 
     let scope = if global { "global" } else { "local" };
+    let max_w = display_width();
     let items: Vec<String> = personas
         .iter()
         .map(|(name, role)| {
@@ -253,11 +307,12 @@ pub fn select_personas(
             } else {
                 "[ ]"
             };
-            if role.is_empty() {
+            let raw = if role.is_empty() {
                 format!("{} {}", tag, name)
             } else {
                 format!("{} {} - {}", tag, name, role)
-            }
+            };
+            truncate_for_display(&raw, max_w)
         })
         .collect();
 
@@ -273,6 +328,7 @@ pub fn select_personas(
         ))
         .items(&items)
         .defaults(&defaults)
+        .max_length(PAGE_SIZE)
         .interact_opt()
         .context("Failed to render persona selection")?;
 

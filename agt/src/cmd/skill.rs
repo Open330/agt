@@ -61,6 +61,17 @@ pub enum SkillAction {
         /// Skill name
         name: String,
     },
+    /// Update remote-installed skills
+    Update {
+        /// Skill or group name (omit to update all remote skills)
+        name: Option<String>,
+        /// Update only global skills
+        #[arg(short, long)]
+        global: bool,
+        /// Update only local skills
+        #[arg(short, long)]
+        local: bool,
+    },
 }
 
 pub fn execute(action: SkillAction) -> Result<()> {
@@ -83,6 +94,11 @@ pub fn execute(action: SkillAction) -> Result<()> {
         } => list(installed, local, global, profiles, json),
         SkillAction::Init => init(),
         SkillAction::Which { name } => which(&name),
+        SkillAction::Update {
+            name,
+            global,
+            local,
+        } => update(name, global, local),
     }
 }
 
@@ -337,7 +353,105 @@ fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> 
         "Done: {} installed, {} skipped from {}/{}",
         installed, skipped, spec.owner, spec.repo
     ));
+
+    // Run post-install setup from agt.toml manifest
+    if let Err(e) = run_manifest_setup(&repo_root) {
+        ui::warn(&format!("Post-install setup: {}", e));
+    }
+
     Ok(())
+}
+
+/// Execute [[setup.copy]] rules from agt.toml in the given directory.
+fn run_manifest_setup(repo_root: &Path) -> Result<()> {
+    let manifest = match config::parse_manifest(repo_root)? {
+        Some(m) => m,
+        None => return Ok(()),
+    };
+
+    if manifest.setup.copy.is_empty() {
+        return Ok(());
+    }
+
+    let mut total_copied = 0;
+
+    for rule in &manifest.setup.copy {
+        let source = repo_root.join(&rule.from);
+        if !source.exists() {
+            continue;
+        }
+
+        let target = config::resolve_home(&rule.to);
+
+        // If target is a symlink, user manages it — skip
+        if target.is_symlink() {
+            ui::info(&format!(
+                "{} is a symlink, skipping",
+                rule.to
+            ));
+            continue;
+        }
+
+        let copied = if source.is_dir() {
+            copy_dir_with_strategy(&source, &target, &rule.strategy)?
+        } else {
+            copy_file_with_strategy(&source, &target, &rule.strategy)?
+        };
+
+        total_copied += copied;
+    }
+
+    if total_copied > 0 {
+        ui::success(&format!("Post-install: copied {} files", total_copied));
+    }
+
+    Ok(())
+}
+
+/// Copy a directory's contents to target using the given strategy.
+/// "merge" skips existing files; "replace" overwrites everything.
+fn copy_dir_with_strategy(source: &Path, target: &Path, strategy: &str) -> Result<usize> {
+    fs::create_dir_all(target)?;
+    let mut copied = 0;
+
+    for entry in fs::read_dir(source)?.flatten() {
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if ft.is_symlink() {
+            continue;
+        }
+
+        let dest = target.join(entry.file_name());
+
+        if ft.is_dir() {
+            copied += copy_dir_with_strategy(&entry.path(), &dest, strategy)?;
+        } else {
+            copied += copy_file_with_strategy(&entry.path(), &dest, strategy)?;
+        }
+    }
+
+    Ok(copied)
+}
+
+/// Copy a single file to target using the given strategy.
+fn copy_file_with_strategy(source: &Path, target: &Path, strategy: &str) -> Result<usize> {
+    if target.exists() && strategy == "merge" {
+        return Ok(0);
+    }
+
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    fs::copy(source, target).context(format!(
+        "Failed to copy {} -> {}",
+        source.display(),
+        target.display()
+    ))?;
+
+    Ok(1)
 }
 
 fn uninstall(name: &str, global: bool) -> Result<()> {
@@ -575,6 +689,12 @@ fn install_profile(profile_name: &str, global: bool, force: bool) -> Result<()> 
         "Profile '{}': {} installed, {} skipped",
         resolved.name, installed, skipped
     ));
+
+    // Run post-install setup from agt.toml manifest
+    if let Err(e) = run_manifest_setup(&source_dir) {
+        ui::warn(&format!("Post-install setup: {}", e));
+    }
+
     Ok(())
 }
 
@@ -897,6 +1017,183 @@ fn which(name: &str) -> Result<()> {
     }
 
     bail!("Skill '{}' not found", name);
+}
+
+fn update(name: Option<String>, only_global: bool, only_local: bool) -> Result<()> {
+    let mut targets: Vec<(&str, PathBuf)> = Vec::new();
+
+    if !only_global {
+        targets.push(("local", config::local_skill_target()));
+    }
+    if !only_local {
+        targets.push(("global", config::global_skill_target()));
+    }
+
+    let mut total_updated = 0usize;
+    let mut total_failed = 0usize;
+    let mut found_any = false;
+
+    for (scope, target_dir) in &targets {
+        if !target_dir.is_dir() {
+            continue;
+        }
+
+        let remote_skills = match &name {
+            Some(n) => find_update_targets(target_dir, n)?,
+            None => find_all_remote_skills(target_dir),
+        };
+
+        if remote_skills.is_empty() {
+            continue;
+        }
+        found_any = true;
+
+        for (skill_path, display_name) in &remote_skills {
+            match update_single_skill(skill_path, display_name, scope) {
+                Ok(()) => total_updated += 1,
+                Err(e) => {
+                    ui::warn(&format!("Failed to update '{}': {:#}", display_name, e));
+                    total_failed += 1;
+                }
+            }
+        }
+    }
+
+    if !found_any {
+        if let Some(ref n) = name {
+            bail!("No remote skill '{}' found to update", n);
+        } else {
+            ui::info("No remote-installed skills found to update.");
+        }
+    } else {
+        ui::success(&format!(
+            "Update complete: {} updated, {} failed",
+            total_updated, total_failed
+        ));
+    }
+
+    Ok(())
+}
+
+/// Scan a target directory for all skills that have .remote-source metadata.
+fn find_all_remote_skills(target_dir: &Path) -> Vec<(PathBuf, String)> {
+    let mut results = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(target_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+
+            // Group directory (no SKILL.md) — scan children
+            if path.is_dir() && !path.join("SKILL.md").exists() {
+                if let Ok(children) = fs::read_dir(&path) {
+                    for child in children.flatten() {
+                        let child_path = child.path();
+                        let child_name = child.file_name().to_string_lossy().to_string();
+                        if child_name.starts_with('.') {
+                            continue;
+                        }
+                        if child_path.join(".remote-source").exists() {
+                            results.push((child_path, format!("{}/{}", name, child_name)));
+                        }
+                    }
+                }
+            } else if path.join(".remote-source").exists() {
+                results.push((path, name));
+            }
+        }
+    }
+
+    results
+}
+
+/// Find update targets by name. Handles skill name, group name, or group/name format.
+fn find_update_targets(target_dir: &Path, name: &str) -> Result<Vec<(PathBuf, String)>> {
+    let name = name.trim_end_matches('/');
+
+    // "group/skill" format
+    if name.contains('/') {
+        let path = target_dir.join(name);
+        if path.join(".remote-source").exists() {
+            return Ok(vec![(path, name.to_string())]);
+        }
+        if path.exists() {
+            bail!(
+                "Skill '{}' is not a remote skill (no .remote-source metadata). \
+                 Only remote-installed skills can be updated.",
+                name
+            );
+        }
+        return Ok(vec![]);
+    }
+
+    // Check if name matches a group directory
+    let group_dir = target_dir.join(name);
+    if group_dir.is_dir() && !group_dir.join("SKILL.md").exists() {
+        let mut results = Vec::new();
+        if let Ok(children) = fs::read_dir(&group_dir) {
+            for child in children.flatten() {
+                let child_path = child.path();
+                let child_name = child.file_name().to_string_lossy().to_string();
+                if child_name.starts_with('.') {
+                    continue;
+                }
+                if child_path.join(".remote-source").exists() {
+                    results.push((child_path, format!("{}/{}", name, child_name)));
+                }
+            }
+        }
+        if !results.is_empty() {
+            return Ok(results);
+        }
+    }
+
+    // Check as a single skill
+    if let Some(skill_path) = find_installed_skill(target_dir, name) {
+        if skill_path.join(".remote-source").exists() {
+            let display = skill_path
+                .strip_prefix(target_dir)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| name.to_string());
+            return Ok(vec![(skill_path, display)]);
+        }
+        bail!(
+            "Skill '{}' is not a remote skill (no .remote-source metadata). \
+             Only remote-installed skills can be updated.",
+            name
+        );
+    }
+
+    Ok(vec![])
+}
+
+/// Update a single remote skill by re-fetching from its original source.
+fn update_single_skill(skill_path: &Path, display_name: &str, scope: &str) -> Result<()> {
+    let spec = remote::parse_metadata(skill_path)?;
+
+    ui::info(&format!(
+        "Updating '{}' ({}) from {}...",
+        display_name, scope, spec
+    ));
+
+    let (_tmp_dir, source_path) = remote::fetch_dir(&spec)?;
+
+    if !source_path.join("SKILL.md").exists() {
+        bail!("Remote source no longer contains SKILL.md");
+    }
+
+    // Replace: remove old, copy new
+    if skill_path.is_dir() {
+        fs::remove_dir_all(skill_path)?;
+    }
+    util::copy_dir_recursive(&source_path, skill_path)?;
+    remote::write_metadata(skill_path, &spec)?;
+
+    ui::success(&format!("Updated '{}' ({})", display_name, scope));
+    Ok(())
 }
 
 fn list_profiles_display(json: bool) -> Result<()> {

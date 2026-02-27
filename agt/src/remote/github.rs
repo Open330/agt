@@ -241,6 +241,49 @@ pub fn write_metadata(target: &Path, spec: &RemoteSpec) -> Result<()> {
     Ok(())
 }
 
+/// Parse .remote-source metadata file back into a RemoteSpec.
+pub fn parse_metadata(skill_dir: &Path) -> Result<RemoteSpec> {
+    let metadata_path = skill_dir.join(".remote-source");
+    let content = fs::read_to_string(&metadata_path)
+        .context(format!("Failed to read {}", metadata_path.display()))?;
+
+    let mut source = String::new();
+    let mut git_ref = "main".to_string();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(val) = line.strip_prefix("source:") {
+            source = val.trim().to_string();
+        } else if let Some(val) = line.strip_prefix("ref:") {
+            git_ref = val.trim().to_string();
+        }
+    }
+
+    if source.is_empty() {
+        bail!(
+            "Invalid .remote-source: missing 'source' field in {}",
+            metadata_path.display()
+        );
+    }
+
+    // source is "owner/repo/path" — split into parts
+    let parts: Vec<&str> = source.splitn(3, '/').collect();
+    if parts.len() < 2 {
+        bail!("Invalid source format in .remote-source: {}", source);
+    }
+
+    Ok(RemoteSpec {
+        owner: parts[0].to_string(),
+        repo: parts[1].to_string(),
+        path: if parts.len() > 2 {
+            parts[2].to_string()
+        } else {
+            String::new()
+        },
+        git_ref,
+    })
+}
+
 fn chrono_like_now() -> String {
     use std::time::SystemTime;
     let duration = SystemTime::now()
@@ -359,5 +402,34 @@ mod tests {
     #[test]
     fn test_parse_spec_invalid() {
         assert!(parse_spec("bad-format").is_err());
+    }
+
+    #[test]
+    fn test_parse_metadata_roundtrip() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skill_dir = tmp.path().join("test-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+
+        let spec = RemoteSpec {
+            owner: "jiunbae".to_string(),
+            repo: "agent-skills".to_string(),
+            path: "agents/background-reviewer".to_string(),
+            git_ref: "v2026.02.19.1".to_string(),
+        };
+        write_metadata(&skill_dir, &spec).unwrap();
+
+        let parsed = parse_metadata(&skill_dir).unwrap();
+        assert_eq!(parsed.owner, "jiunbae");
+        assert_eq!(parsed.repo, "agent-skills");
+        assert_eq!(parsed.path, "agents/background-reviewer");
+        assert_eq!(parsed.git_ref, "v2026.02.19.1");
+    }
+
+    #[test]
+    fn test_parse_metadata_missing_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skill_dir = tmp.path().join("no-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        assert!(parse_metadata(&skill_dir).is_err());
     }
 }
