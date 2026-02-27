@@ -70,6 +70,7 @@ npm install -g @open330/agt
 agt skill install --profile core
 agt skill install -g git-commit-pr     # Install a skill globally
 agt persona install -g --all           # Install all personas globally
+agt skill update                       # Update all remote-installed skills
 ```
 
 ### With install.sh
@@ -263,9 +264,38 @@ my-skills/
 │   ├── my-reviewer/
 │   │   └── PERSONA.md
 │   └── my-expert.md           # Single-file persona also works
+├── static/                    # Optional: global context files
+│   └── WHOAMI.sample.md
 ├── profiles.yml               # Optional: installation profiles
+├── agt.toml                   # Optional: post-install manifest
 └── README.md
 ```
+
+### agt.toml (Post-Install Manifest)
+
+Repos can include an `agt.toml` to declare setup actions that run after `agt skill install --from`. This keeps repo-specific setup logic out of the `agt` CLI itself.
+
+```toml
+# Copy static context files to ~/.agents/ after skill installation
+[[setup.copy]]
+from = "static"          # Source directory (relative to repo root)
+to = "~/.agents"         # Target directory (must be ~/... path)
+strategy = "merge"       # merge: skip existing files, replace: overwrite
+
+# Copy personas to ~/.agents/personas/
+[[setup.copy]]
+from = "personas"
+to = "~/.agents/personas"
+strategy = "merge"
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `from` | Yes | Source path relative to repo root (no `..` or absolute paths) |
+| `to` | Yes | Target path, must be home-relative (`~/...`) |
+| `strategy` | No | `merge` (default, skip existing) or `replace` (overwrite) |
+
+**Safety:** Source paths must be within the repo. Target paths must be under `~/`. Symlink targets are skipped (if `~/.agents` is already a symlink, the user manages it). Existing files are preserved with `merge` strategy.
 
 ### SKILL.md Format
 
@@ -563,6 +593,7 @@ agent-skills/                        open330/agt (CLI tool)
 ├── personas/     Expert personas
 ├── hooks/        Claude Code hooks
 ├── static/       Global context
+├── agt.toml      Post-install manifest
 ├── install.sh    Local installer
 └── codex-support/ Codex CLI
 ```
