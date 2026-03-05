@@ -53,7 +53,7 @@ PERSONAS_SOURCE="${SCRIPT_DIR}/personas"
 PERSONAS_TARGET="${HOME}/.agents/personas"
 
 # 제외 디렉토리 (스킬 그룹으로 인식하지 않음)
-EXCLUDE_DIRS=("static" "cli" "codex-support" "hooks" "personas" ".git" ".github" ".agents" "node_modules" "__pycache__")
+EXCLUDE_DIRS=("static" "cli" "codex-support" "hooks" "personas" "teams" ".git" ".github" ".agents" "node_modules" "__pycache__")
 
 # Core 스킬 (기본 전역 설치, 워크스페이스 공통 필수)
 CORE_SKILLS=(
@@ -699,9 +699,9 @@ with open('$HOOKS_REGISTRY') as f:
 print(hooks['$hook_name'].get('type', 'command'))
 " 2>/dev/null)
 
-    # prompt 타입은 스크립트 파일 불필요
+    # command 타입만 스크립트 파일 필요; http/prompt/agent는 설정만 등록
     if [[ "$hook_type" != "command" ]]; then
-      log_info "등록: ${hook_name} (${hook_type} 타입, 스크립트 불필요)"
+      log_info "등록: ${hook_name} (${hook_type} 타입)"
       continue
     fi
 
@@ -759,7 +759,7 @@ print(hooks['$hook_name'].get('script', ''))
     echo '{}' >"$settings_file"
   fi
 
-  # Python으로 settings.json에 hooks 설정 병합
+  # Python으로 settings.json에 hooks 설정 병합 (command, http, prompt, agent 지원)
   python3 - "$settings_file" "$HOOKS_REGISTRY" "$HOOKS_TARGET" <<'PYEOF'
 import json
 import sys
@@ -787,12 +787,12 @@ for hook_name, hook_config in registry.items():
 
     # 중복 확인용 식별자 생성
     if hook_type == 'command':
-        script_path = os.path.join(hooks_target, hook_config['script'])
+        script_path = os.path.join(hooks_target, hook_config.get('script', ''))
         identifier = f"bash {script_path}"
-        id_key = 'command'
-    else:  # prompt 타입
+    elif hook_type == 'http':
+        identifier = hook_config.get('url', '')
+    else:  # prompt or agent
         identifier = hook_config.get('prompt', '')[:80]
-        id_key = 'prompt'
 
     # 기존에 같은 hook이 있는지 확인
     already_exists = False
@@ -801,23 +801,36 @@ for hook_name, hook_config in registry.items():
             if hook_type == 'command' and h.get('command') == identifier:
                 already_exists = True
                 break
-            if hook_type == 'prompt' and h.get('prompt', '')[:80] == identifier:
+            if hook_type == 'http' and h.get('url') == identifier:
+                already_exists = True
+                break
+            if hook_type in ('prompt', 'agent') and h.get('prompt', '')[:80] == identifier:
                 already_exists = True
                 break
 
     if not already_exists:
-        # hook 엔트리 생성
+        # hook handler 생성
         h = {'type': hook_type}
 
         if hook_type == 'command':
             h['command'] = identifier
-        elif hook_type == 'prompt':
+            if hook_config.get('async'):
+                h['async'] = True
+        elif hook_type == 'http':
+            h['url'] = hook_config['url']
+            if 'headers' in hook_config:
+                h['headers'] = hook_config['headers']
+            if 'allowedEnvVars' in hook_config:
+                h['allowedEnvVars'] = hook_config['allowedEnvVars']
+        elif hook_type in ('prompt', 'agent'):
             h['prompt'] = hook_config['prompt']
 
         if 'statusMessage' in hook_config:
             h['statusMessage'] = hook_config['statusMessage']
         if 'model' in hook_config:
             h['model'] = hook_config['model']
+        if 'timeout' in hook_config:
+            h['timeout'] = hook_config['timeout']
 
         hook_entry = {'hooks': [h]}
         if 'matcher' in hook_config:
@@ -917,19 +930,24 @@ for hook_name, hook_config in registry.items():
     if event not in settings['hooks']:
         continue
 
-    if hook_type == 'command':
-        script_path = os.path.join(hooks_target, hook_config.get('script', ''))
-        command = f"bash {script_path}"
-        settings['hooks'][event] = [
-            entry for entry in settings['hooks'][event]
-            if not any(h.get('command') == command for h in entry.get('hooks', []))
-        ]
-    else:  # prompt 타입
-        prompt_prefix = hook_config.get('prompt', '')[:80]
-        settings['hooks'][event] = [
-            entry for entry in settings['hooks'][event]
-            if not any(h.get('prompt', '')[:80] == prompt_prefix for h in entry.get('hooks', []))
-        ]
+    def should_remove(entry):
+        for h in entry.get('hooks', []):
+            if hook_type == 'command':
+                script_path = os.path.join(hooks_target, hook_config.get('script', ''))
+                if h.get('command') == f"bash {script_path}":
+                    return True
+            elif hook_type == 'http':
+                if h.get('url') == hook_config.get('url', ''):
+                    return True
+            elif hook_type in ('prompt', 'agent'):
+                if h.get('prompt', '')[:80] == hook_config.get('prompt', '')[:80]:
+                    return True
+        return False
+
+    settings['hooks'][event] = [
+        entry for entry in settings['hooks'][event]
+        if not should_remove(entry)
+    ]
 
     if not settings['hooks'][event]:
         del settings['hooks'][event]

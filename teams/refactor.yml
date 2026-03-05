@@ -1,0 +1,43 @@
+name: refactor
+description: Safe refactoring team that plans, implements, and validates changes with full test coverage
+teammate_mode: auto
+plan_approval: true
+
+teammates:
+  - role: planner
+    description: Analyzes current code, identifies refactoring targets, and creates a step-by-step migration plan
+    plan_approval: true
+    skills:
+      - context/context-manager
+
+  - role: migrator
+    description: Executes the refactoring plan one step at a time, ensuring each step compiles and passes tests
+    skills:
+      - development/git-commit-pr
+
+  - role: validator
+    description: Runs tests after each change, verifies no regressions, and checks that behavior is preserved
+    skills: []
+
+tasks:
+  - title: Analyze and plan
+    description: Read the target code and its callers. Create a detailed refactoring plan with ordered steps. Each step should be independently verifiable.
+    assignee: planner
+
+  - title: Execute refactoring
+    description: Follow the refactoring plan step by step. Make one change at a time. Ensure code compiles after each step.
+    assignee: migrator
+    depends_on:
+      - Analyze and plan
+
+  - title: Validate each step
+    description: After each refactoring step, run the full test suite. Check for regressions. Verify API compatibility.
+    assignee: validator
+    depends_on:
+      - Analyze and plan
+
+  - title: Final verification
+    description: Run comprehensive tests, check git diff for unintended changes, and verify all public APIs are preserved.
+    depends_on:
+      - Execute refactoring
+      - Validate each step

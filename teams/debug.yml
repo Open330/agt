@@ -1,0 +1,37 @@
+name: debug
+description: Debugging team that tests competing hypotheses in parallel to find root cause faster
+teammate_mode: auto
+plan_approval: false
+
+teammates:
+  - role: log-analyst
+    description: Analyzes logs, error messages, stack traces, and recent changes to identify patterns
+    skills: []
+
+  - role: code-tracer
+    description: Traces code execution paths, reads source code, and identifies where the bug likely originates
+    skills: []
+
+  - role: reproducer
+    description: Attempts to reproduce the bug with minimal test cases and identifies exact conditions that trigger it
+    skills: []
+
+tasks:
+  - title: Analyze error context
+    description: Read error logs, stack traces, and recent git changes. Identify when the issue started and what changed.
+    assignee: log-analyst
+
+  - title: Trace code path
+    description: Follow the code execution path related to the bug. Read relevant source files and identify suspicious logic.
+    assignee: code-tracer
+
+  - title: Reproduce and isolate
+    description: Create a minimal reproduction of the bug. Identify the exact input/conditions that trigger the issue.
+    assignee: reproducer
+
+  - title: Propose fix
+    description: Based on all findings, propose a targeted fix with explanation of root cause and verification steps.
+    depends_on:
+      - Analyze error context
+      - Trace code path
+      - Reproduce and isolate
