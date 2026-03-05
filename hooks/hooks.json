@@ -1,6 +1,6 @@
 {
   "english-coach": {
-    "description": "Rewrites prompts in better English with vocabulary",
+    "description": "Rewrites prompts in natural English with vocabulary tips",
     "script": "english-coach.sh",
     "event": "UserPromptSubmit",
     "type": "command",
@@ -11,6 +11,78 @@
     "script": "prompt-logger.sh",
     "event": "UserPromptSubmit",
     "type": "command",
-    "statusMessage": "Logging prompt..."
+    "statusMessage": "Logging prompt...",
+    "async": true
+  },
+  "tool-analytics": {
+    "description": "Tracks tool usage metrics via HTTP endpoint",
+    "event": "PostToolUse",
+    "type": "http",
+    "url": "http://localhost:9400/hooks/tool-analytics",
+    "statusMessage": "Recording tool usage...",
+    "timeout": 5
+  },
+  "security-gate": {
+    "description": "AI-powered security check for dangerous shell commands",
+    "event": "PreToolUse",
+    "type": "prompt",
+    "matcher": "Bash",
+    "prompt": "You are a security auditor. Analyze this tool call and determine if it's safe.\n\nTool: $ARGUMENTS\n\nRespond with {\"decision\": \"allow\"} if safe, or {\"decision\": \"deny\", \"reason\": \"...\"} if dangerous.\n\nDangerous patterns: rm -rf /, chmod 777, curl | sh, eval on untrusted input, writing to /etc, killing system processes.",
+    "statusMessage": "Security check..."
+  },
+  "commit-guard": {
+    "description": "Prevents committing sensitive files (env, keys, credentials)",
+    "event": "PreToolUse",
+    "type": "command",
+    "matcher": "Bash",
+    "script": "commit-guard.sh",
+    "statusMessage": "Checking for secrets..."
+  },
+  "post-edit-lint": {
+    "description": "Runs linter after file edits via HTTP hook server",
+    "event": "PostToolUse",
+    "type": "http",
+    "matcher": "Edit|Write",
+    "url": "http://localhost:9400/hooks/post-edit-lint",
+    "statusMessage": "Linting...",
+    "timeout": 15
+  },
+  "session-context": {
+    "description": "Loads project context at session start via HTTP",
+    "event": "SessionStart",
+    "type": "http",
+    "url": "http://localhost:9400/hooks/session-context",
+    "statusMessage": "Loading context...",
+    "timeout": 10
+  },
+  "code-review-agent": {
+    "description": "Agent-based code review for file modifications",
+    "event": "PostToolUse",
+    "type": "agent",
+    "matcher": "Edit|Write",
+    "prompt": "Review the code change that just happened. Check for:\n1. Security vulnerabilities (injection, XSS, etc.)\n2. Logic errors or edge cases\n3. Performance issues\n\nUse Read and Grep tools to examine the modified file. Return {\"decision\": \"block\", \"reason\": \"...\"} only if there's a critical issue, otherwise return {}.",
+    "statusMessage": "Code review agent..."
+  },
+  "teammate-idle-check": {
+    "description": "Validates teammate work when going idle, sends back for more if incomplete",
+    "event": "TeammateIdle",
+    "type": "prompt",
+    "prompt": "A teammate is about to go idle. Review their recent work:\n\n$ARGUMENTS\n\nIf the teammate has completed their assigned task satisfactorily, respond with {}.\nIf there is clearly unfinished work, respond with {\"decision\": \"block\", \"reason\": \"Please complete: <specific unfinished items>\"}.",
+    "statusMessage": "Checking teammate progress..."
+  },
+  "task-completion-validator": {
+    "description": "Validates task completion by checking deliverables before marking done",
+    "event": "TaskCompleted",
+    "type": "agent",
+    "prompt": "A task is being marked as completed. Verify the deliverables:\n\n$ARGUMENTS\n\nUse Read and Grep to check:\n1. Were the expected files created/modified?\n2. Does the code compile (check for syntax errors)?\n3. Are there any TODO/FIXME comments left behind?\n\nReturn {} if everything looks good, or {\"decision\": \"block\", \"reason\": \"...\"} if the task is incomplete.",
+    "statusMessage": "Validating task completion..."
+  },
+  "team-activity-log": {
+    "description": "Logs team activity (subagent start/stop) for analytics",
+    "event": "SubagentStop",
+    "type": "http",
+    "url": "http://localhost:9400/hooks/team-activity",
+    "statusMessage": "Logging team activity...",
+    "timeout": 5
   }
 }

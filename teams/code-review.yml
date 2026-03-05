@@ -1,0 +1,39 @@
+name: code-review
+description: Multi-perspective code review team with security, architecture, and quality experts
+teammate_mode: auto
+plan_approval: false
+
+teammates:
+  - role: security-reviewer
+    description: Reviews code for security vulnerabilities, injection risks, credential leaks, and OWASP top 10
+    persona: security-reviewer
+    skills:
+      - security/security-auditor
+
+  - role: architecture-reviewer
+    description: Reviews code structure, design patterns, coupling, and maintainability
+    skills: []
+
+  - role: quality-reviewer
+    description: Reviews code quality, test coverage, error handling, and edge cases
+    skills: []
+
+tasks:
+  - title: Security audit
+    description: Scan all changed files for security vulnerabilities, credential leaks, and injection risks. Report findings with severity levels.
+    assignee: security-reviewer
+
+  - title: Architecture review
+    description: Review the overall structure of the changes. Check for proper separation of concerns, adherence to existing patterns, and potential coupling issues.
+    assignee: architecture-reviewer
+
+  - title: Quality review
+    description: Review code quality including error handling, edge cases, test coverage, naming conventions, and documentation.
+    assignee: quality-reviewer
+
+  - title: Synthesize findings
+    description: Collect all review findings and create a unified review summary with prioritized action items.
+    depends_on:
+      - Security audit
+      - Architecture review
+      - Quality review

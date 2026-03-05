@@ -15,6 +15,7 @@ const EXCLUDE_DIRS: &[&str] = &[
     "node_modules",
     "__pycache__",
     "hooks",
+    "teams",
     "target",
 ];
 
@@ -182,4 +183,17 @@ pub fn global_persona_target() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("~"))
         .join(".agents/personas")
+}
+
+/// Hook paths
+pub fn global_hook_target() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("~"))
+        .join(".claude/hooks")
+}
+
+pub fn claude_settings_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("~"))
+        .join(".claude/settings.json")
 }

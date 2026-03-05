@@ -26,6 +26,31 @@ enum Commands {
         #[command(subcommand)]
         action: cmd::skill::SkillAction,
     },
+    /// Manage Claude Code hooks (command, http, prompt, agent)
+    Hook {
+        #[command(subcommand)]
+        action: cmd::hook::HookAction,
+    },
+    /// Manage agent teams (spawn coordinated multi-agent workflows)
+    #[command(
+        long_about = "Manage agent teams — coordinated multi-agent workflows.\n\n\
+            Agent teams let multiple Claude Code instances work together on parallel tasks.\n\
+            Each teammate gets its own context window and can communicate with others.\n\n\
+            Team templates define: teammates (roles), tasks (work items), hooks, and settings.\n\n\
+            Template locations (searched in order):\n  \
+              .claude/teams/           Project-local (highest priority)\n  \
+              ~/.claude/teams/         User global\n  \
+              teams/                   Library (bundled)\n\n\
+            Quick start:\n  \
+              agt team enable           Enable agent teams in Claude Code\n  \
+              agt team list             See available team templates\n  \
+              agt team create debug     Generate a spawn prompt for Claude Code\n  \
+              agt team init             Create a custom team template"
+    )]
+    Team {
+        #[command(subcommand)]
+        action: cmd::team::TeamAction,
+    },
     /// Manage agent personas (markdown files that define expert identities for any AI agent)
     #[command(
         long_about = "Manage agent personas — markdown files that define expert identities.\n\n\
@@ -74,6 +99,8 @@ fn main() {
 
     let result = match cli.command {
         Commands::Skill { action } => cmd::skill::execute(action),
+        Commands::Hook { action } => cmd::hook::execute(action),
+        Commands::Team { action } => cmd::team::execute(action),
         Commands::Persona { action } => cmd::persona::execute(action),
         Commands::Run { prompt, skill } => {
             cmd::run::execute(&prompt.join(" "), skill.as_deref())
@@ -175,6 +202,52 @@ _agt_persona_which() {{
     _arguments '1:persona name:_agt_persona_names'
 }}
 
+_agt_team_names() {{
+    local -a names
+    names=(${{(f)"$(agt complete-names team 2>/dev/null)"}})
+    compadd -a names
+}}
+
+_agt_team_create() {{
+    _arguments \
+        '1:team name:_agt_team_names' \
+        '-n=[Teammate count]:count:' \
+        '--teammates=[Teammate count]:count:' \
+        '--mode=[Display mode]:mode:(in-process tmux auto)' \
+        '--context=[Additional context]:context:'
+}}
+
+_agt_team_show() {{
+    _arguments '1:team name:_agt_team_names'
+}}
+
+_agt_hook_names() {{
+    local -a names
+    names=(${{(f)"$(agt complete-names hook 2>/dev/null)"}})
+    compadd -a names
+}}
+
+_agt_hook_install() {{
+    _arguments \
+        '1:hook name:_agt_hook_names' \
+        '-f[Force overwrite]' \
+        '--force[Force overwrite]'
+}}
+
+_agt_hook_uninstall() {{
+    _arguments '1:hook name:_agt_hook_names'
+}}
+
+_agt_hook_test() {{
+    _arguments \
+        '1:hook name:_agt_hook_names' \
+        '--payload=[JSON payload]:payload:'
+}}
+
+_agt_hook_show() {{
+    _arguments '1:hook name:_agt_hook_names'
+}}
+
 _agt_skill_install() {{
     _arguments \
         '1:skill name:_agt_skill_names' \
@@ -240,6 +313,30 @@ _agt_enhanced() {{
         esac
     fi
 
+    # Detect context: agt team <subcommand> <NAME>
+    if [[ "${{words[1]}}" == "team" ]] && [[ $cword -ge 3 ]]; then
+        case "${{words[2]}}" in
+            create|show)
+                if [[ $cword -eq 3 ]] && [[ "$cur" != -* ]]; then
+                    _agt_dynamic_complete team
+                    return
+                fi
+                ;;
+        esac
+    fi
+
+    # Detect context: agt hook <subcommand> <NAME>
+    if [[ "${{words[1]}}" == "hook" ]] && [[ $cword -ge 3 ]]; then
+        case "${{words[2]}}" in
+            install|uninstall|test|show)
+                if [[ $cword -eq 3 ]] && [[ "$cur" != -* ]]; then
+                    _agt_dynamic_complete hook
+                    return
+                fi
+                ;;
+        esac
+    fi
+
     # Detect context: agt skill <subcommand> <NAME>
     if [[ "${{words[1]}}" == "skill" ]] && [[ $cword -ge 3 ]]; then
         case "${{words[2]}}" in
@@ -266,6 +363,12 @@ fn print_fish_completions(base: &str) {
 # Dynamic completions for persona names
 complete -c agt -n '__fish_seen_subcommand_from persona; and __fish_seen_subcommand_from review install uninstall show which' -xa '(agt complete-names persona 2>/dev/null)'
 
+# Dynamic completions for team names
+complete -c agt -n '__fish_seen_subcommand_from team; and __fish_seen_subcommand_from create show' -xa '(agt complete-names team 2>/dev/null)'
+
+# Dynamic completions for hook names
+complete -c agt -n '__fish_seen_subcommand_from hook; and __fish_seen_subcommand_from install uninstall test show' -xa '(agt complete-names hook 2>/dev/null)'
+
 # Dynamic completions for skill names
 complete -c agt -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from install uninstall which update' -xa '(agt complete-names skill 2>/dev/null)'
 "#);
@@ -291,6 +394,43 @@ fn complete_names(kind: &str) {
                 println!("{}", name);
             }
         }
+        "team" => {
+            let mut names = std::collections::BTreeSet::new();
+            // Bundled templates
+            if let Some(source_dir) = config::find_source_dir() {
+                collect_yaml_names(&source_dir.join("teams"), &mut names);
+            }
+            // Global templates
+            let global_dir = dirs::home_dir()
+                .unwrap_or_default()
+                .join(".claude/teams");
+            collect_yaml_names(&global_dir, &mut names);
+            // Local templates
+            collect_yaml_names(&std::path::PathBuf::from(".claude/teams"), &mut names);
+            for name in names {
+                println!("{}", name);
+            }
+        }
+        "hook" => {
+            let mut names = std::collections::BTreeSet::new();
+            if let Some(source_dir) = config::find_source_dir() {
+                let registry_path = source_dir.join("hooks/hooks.json");
+                if let Ok(content) = std::fs::read_to_string(&registry_path) {
+                    if let Ok(registry) =
+                        serde_json::from_str::<std::collections::BTreeMap<String, serde_json::Value>>(
+                            &content,
+                        )
+                    {
+                        for name in registry.keys() {
+                            names.insert(name.clone());
+                        }
+                    }
+                }
+            }
+            for name in names {
+                println!("{}", name);
+            }
+        }
         "skill" => {
             let mut names = std::collections::BTreeSet::new();
 
@@ -312,6 +452,17 @@ fn complete_names(kind: &str) {
             }
         }
         _ => {}
+    }
+}
+
+fn collect_yaml_names(dir: &std::path::Path, names: &mut std::collections::BTreeSet<String>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let raw = entry.file_name().to_string_lossy().to_string();
+            if let Some(stem) = raw.strip_suffix(".yml").or_else(|| raw.strip_suffix(".yaml")) {
+                names.insert(stem.to_string());
+            }
+        }
     }
 }
 

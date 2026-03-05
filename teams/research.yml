@@ -1,0 +1,37 @@
+name: research
+description: Parallel research team that investigates a topic from different angles and synthesizes findings
+teammate_mode: auto
+plan_approval: false
+
+teammates:
+  - role: technical-researcher
+    description: Investigates technical feasibility, implementation options, and existing solutions in the codebase
+    skills: []
+
+  - role: market-researcher
+    description: Researches existing tools, libraries, alternatives, and community best practices
+    skills: []
+
+  - role: devils-advocate
+    description: Challenges assumptions, identifies risks, explores failure modes and edge cases
+    skills: []
+
+tasks:
+  - title: Technical analysis
+    description: Analyze the codebase and explore technical implementation options. Identify constraints, dependencies, and potential approaches.
+    assignee: technical-researcher
+
+  - title: External research
+    description: Research existing solutions, libraries, and best practices. Compare approaches and their trade-offs.
+    assignee: market-researcher
+
+  - title: Risk analysis
+    description: Challenge the proposed approach. Identify potential failure modes, scaling issues, security concerns, and maintenance burden.
+    assignee: devils-advocate
+
+  - title: Synthesize recommendations
+    description: Combine all research findings into a recommendation with clear pros/cons and a suggested path forward.
+    depends_on:
+      - Technical analysis
+      - External research
+      - Risk analysis

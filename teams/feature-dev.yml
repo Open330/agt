@@ -1,0 +1,47 @@
+name: feature-dev
+description: Feature development team with architect, implementer, and tester working in parallel
+teammate_mode: auto
+plan_approval: true
+
+teammates:
+  - role: architect
+    description: Designs the feature architecture, defines interfaces, and creates the implementation plan
+    plan_approval: true
+    skills:
+      - context/context-manager
+
+  - role: implementer
+    description: Writes production code following the architect's plan. Owns separate files to avoid conflicts.
+    skills:
+      - development/git-commit-pr
+
+  - role: tester
+    description: Writes unit and integration tests, verifies edge cases and error handling
+    skills: []
+
+  - role: docs-writer
+    description: Updates documentation, README, and inline comments for the new feature
+    skills: []
+
+tasks:
+  - title: Design architecture
+    description: Analyze the codebase and design the feature. Define file structure, interfaces, data flow, and integration points. Output a clear plan.
+    assignee: architect
+
+  - title: Implement core logic
+    description: Implement the core feature logic following the architecture plan. Focus on the main code path first.
+    assignee: implementer
+    depends_on:
+      - Design architecture
+
+  - title: Write tests
+    description: Write comprehensive tests for the new feature. Cover happy path, edge cases, and error scenarios.
+    assignee: tester
+    depends_on:
+      - Design architecture
+
+  - title: Update documentation
+    description: Update README, add inline documentation, and create usage examples for the new feature.
+    assignee: docs-writer
+    depends_on:
+      - Implement core logic
