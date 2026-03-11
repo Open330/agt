@@ -2,6 +2,7 @@ use crate::{config, frontmatter, remote, ui, util};
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use colored::Colorize;
+use std::collections::HashSet;
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
@@ -165,6 +166,15 @@ fn install(
         config::local_skill_target()
     };
 
+    // Check cross-scope duplicate
+    if !force {
+        let local_dir = config::local_skill_target();
+        let global_dir = config::global_skill_target();
+        if warn_cross_scope_duplicate(&name, &group, global, &local_dir, &global_dir) {
+            return Ok(());
+        }
+    }
+
     // Preserve group prefix: target_dir/group/skill_name
     let group_dir = if group.is_empty() {
         target_dir.clone()
@@ -311,10 +321,20 @@ fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> 
 
     let mut installed = 0;
     let mut skipped = 0;
+    let local_dir = config::local_skill_target();
+    let global_dir = config::global_skill_target();
 
     for (group, skill_name) in &skills_to_install {
         let source_path = repo_root.join(group).join(skill_name);
         if !source_path.is_dir() || !source_path.join("SKILL.md").exists() {
+            skipped += 1;
+            continue;
+        }
+
+        // Check cross-scope duplicate
+        if !force
+            && warn_cross_scope_duplicate(skill_name, group, global, &local_dir, &global_dir)
+        {
             skipped += 1;
             continue;
         }
@@ -651,11 +671,21 @@ fn install_profile(profile_name: &str, global: bool, force: bool) -> Result<()> 
 
     let mut installed = 0;
     let mut skipped = 0;
+    let local_dir = config::local_skill_target();
+    let global_dir = config::global_skill_target();
 
     for (group, skill_name) in &resolved.skills {
         let skill_path = source_dir.join(group).join(skill_name);
         if !skill_path.is_dir() || !skill_path.join("SKILL.md").exists() {
             ui::warn(&format!("Skill '{}/{}' not found, skipping", group, skill_name));
+            skipped += 1;
+            continue;
+        }
+
+        // Check cross-scope duplicate
+        if !force
+            && warn_cross_scope_duplicate(skill_name, group, global, &local_dir, &global_dir)
+        {
             skipped += 1;
             continue;
         }
@@ -808,6 +838,8 @@ fn install_selected_skills(
     fs::create_dir_all(&target_dir)?;
 
     let scope = if global { "global" } else { "local" };
+    let local_dir = config::local_skill_target();
+    let global_dir = config::global_skill_target();
     let mut installed = 0;
     let mut skipped = 0;
 
@@ -815,6 +847,14 @@ fn install_selected_skills(
         let skill_path = source_dir.join(group).join(skill_name);
         if !skill_path.is_dir() || !skill_path.join("SKILL.md").exists() {
             ui::warn(&format!("Skill '{}/{}' not found, skipping", group, skill_name));
+            skipped += 1;
+            continue;
+        }
+
+        // Check cross-scope duplicate
+        if !force
+            && warn_cross_scope_duplicate(skill_name, group, global, &local_dir, &global_dir)
+        {
             skipped += 1;
             continue;
         }
@@ -869,6 +909,9 @@ fn list(installed: bool, local: bool, global: bool, profiles: bool, json: bool) 
         if installed || global {
             list_skills_in_dir(&global_dir, "global", &mut entries)?;
         }
+
+        // Deduplicate: local scope takes priority over global
+        dedup_skill_entries(&mut entries);
 
         if json {
             println!("{}", serde_json::to_string_pretty(&entries)?);
@@ -963,6 +1006,9 @@ fn list(installed: bool, local: bool, global: bool, profiles: bool, json: bool) 
         // No source dir — infer groups from symlink targets
         list_skills_in_dir(&local_dir, "local", &mut entries)?;
         list_skills_in_dir(&global_dir, "global", &mut entries)?;
+
+        // Deduplicate: local scope takes priority over global
+        dedup_skill_entries(&mut entries);
 
         if json {
             println!("{}", serde_json::to_string_pretty(&entries)?);
@@ -1241,6 +1287,58 @@ fn find_skill_in_source(source_dir: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
+/// Check if a skill (group/name) exists in a target directory
+fn skill_exists_in_dir(dir: &Path, group: &str, name: &str) -> bool {
+    // Check grouped layout: dir/group/name
+    let grouped = dir.join(group).join(name);
+    if grouped.exists() || grouped.is_symlink() {
+        return true;
+    }
+    // Check flat layout: dir/name
+    let flat = dir.join(name);
+    if flat.exists() || flat.is_symlink() {
+        return true;
+    }
+    false
+}
+
+/// Check cross-scope duplicate and print warning. Returns true if duplicate found.
+fn warn_cross_scope_duplicate(
+    skill_name: &str,
+    group: &str,
+    installing_global: bool,
+    local_dir: &Path,
+    global_dir: &Path,
+) -> bool {
+    // Skip check if both scopes resolve to the same directory
+    if let (Ok(l), Ok(g)) = (
+        std::fs::canonicalize(local_dir),
+        std::fs::canonicalize(global_dir),
+    ) {
+        if l == g {
+            return false;
+        }
+    }
+    let (other_dir, other_scope) = if installing_global {
+        (local_dir, "local")
+    } else {
+        (global_dir, "global")
+    };
+    if skill_exists_in_dir(other_dir, group, skill_name) {
+        eprintln!(
+            "{}",
+            format!(
+                "⚠ Skipped '{}/{}': already installed as {} (use --force to overwrite)",
+                group, skill_name, other_scope
+            )
+            .yellow()
+        );
+        true
+    } else {
+        false
+    }
+}
+
 fn installed_skill_names(dir: &Path) -> Vec<String> {
     let mut names = Vec::new();
     if let Ok(entries) = fs::read_dir(dir) {
@@ -1320,6 +1418,15 @@ fn list_skills_in_dir(
         }
     }
     Ok(())
+}
+
+/// Deduplicate skill entries by name, keeping the first occurrence (local over global).
+fn dedup_skill_entries(entries: &mut Vec<serde_json::Value>) {
+    let mut seen = HashSet::new();
+    entries.retain(|entry| {
+        let name = entry["name"].as_str().unwrap_or("").to_string();
+        seen.insert(name)
+    });
 }
 
 fn read_skill_description(path: &Path) -> String {
