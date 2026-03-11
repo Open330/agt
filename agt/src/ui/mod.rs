@@ -17,3 +17,7 @@ pub fn warn(msg: &str) {
 pub fn error(msg: &str) {
     eprintln!("{} {}", "[ERROR]".red(), msg);
 }
+
+pub fn hint(msg: &str) {
+    eprintln!("{} {}", "[HINT]".cyan(), msg);
+}
