@@ -6,6 +6,95 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
+/// Check if the static-index skill is installed (local or global)
+fn is_static_index_installed() -> bool {
+    let local = config::local_skill_target();
+    let global = config::global_skill_target();
+
+    // Check grouped layout: context/static-index
+    let local_grouped = local.join("context").join("static-index");
+    let global_grouped = global.join("context").join("static-index");
+    // Check flat layout: static-index
+    let local_flat = local.join("static-index");
+    let global_flat = global.join("static-index");
+
+    local_grouped.exists()
+        || local_grouped.is_symlink()
+        || global_grouped.exists()
+        || global_grouped.is_symlink()
+        || local_flat.exists()
+        || local_flat.is_symlink()
+        || global_flat.exists()
+        || global_flat.is_symlink()
+}
+
+/// Refresh the static-index after persona changes
+fn refresh_static_index() {
+    if let Some(source_dir) = config::find_source_dir() {
+        let script = source_dir
+            .join("context")
+            .join("static-index")
+            .join("scripts")
+            .join("static-index.sh");
+        if script.exists() {
+            let script_str = script.to_string_lossy().to_string();
+            let _ = std::process::Command::new("bash")
+                .args([&script_str, "refresh"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+}
+
+/// Suggest installing static-index skill if not present, with optional interactive prompt
+fn suggest_static_index() {
+    if is_static_index_installed() {
+        return;
+    }
+
+    ui::hint(
+        "The 'static-index' skill is not installed. \
+         Claude uses it to discover persona locations.",
+    );
+    ui::hint("Install it with: agt skill install static-index --global");
+
+    // Interactive prompt if TTY
+    if console::Term::stderr().is_term() {
+        let confirmed = dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
+            .with_prompt("Install static-index skill now?")
+            .default(true)
+            .interact()
+            .unwrap_or(false);
+
+        if confirmed {
+            if let Some(source_dir) = config::find_source_dir() {
+                let skill_path = source_dir.join("context").join("static-index");
+                if skill_path.is_dir() && skill_path.join("SKILL.md").exists() {
+                    let target = config::global_skill_target().join("context");
+                    let _ = fs::create_dir_all(&target);
+                    let link_path = target.join("static-index");
+                    if !link_path.exists() && !link_path.is_symlink() {
+                        if symlink(&skill_path, &link_path).is_ok() {
+                            ui::success("Installed skill 'context/static-index' (global)");
+                        }
+                    }
+                } else {
+                    ui::warn("static-index skill not found in source library");
+                }
+            } else {
+                ui::warn(&format!("Source directory not found. {}", config::source_dir_hint()));
+            }
+        }
+    }
+}
+
+/// Post-install actions: refresh index and suggest static-index
+fn post_persona_install() {
+    refresh_static_index();
+    suggest_static_index();
+}
+
 #[derive(Subcommand)]
 pub enum PersonaAction {
     /// Install a persona to .agents/personas/ (local) or ~/.agents/personas/ (global)
@@ -206,6 +295,7 @@ fn install(
 
     let scope = if global { "global" } else { "local" };
     ui::success(&format!("Installed persona '{}' ({})", name, scope));
+    post_persona_install();
     Ok(())
 }
 
@@ -285,6 +375,9 @@ fn install_all(persona_lib: &Path, global: bool, force: bool) -> Result<()> {
 
     let scope = if global { "global" } else { "local" };
     ui::success(&format!("Installed {} personas ({})", count, scope));
+    if count > 0 {
+        post_persona_install();
+    }
     Ok(())
 }
 
@@ -348,6 +441,7 @@ fn install_remote(spec_str: &str, global: bool, force: bool) -> Result<()> {
         "Installed remote persona '{}' ({}) from {}",
         persona_name, scope, spec
     ));
+    post_persona_install();
     Ok(())
 }
 
@@ -474,6 +568,9 @@ fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> 
         "Done: {} personas installed, {} skipped from {}/{}",
         installed, skipped, spec.owner, spec.repo
     ));
+    if installed > 0 {
+        post_persona_install();
+    }
     Ok(())
 }
 
