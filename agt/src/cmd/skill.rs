@@ -147,6 +147,7 @@ fn install(
     util::validate_name(&name)?;
 
     let source_dir = config::find_source_dir()
+        .or_else(config::find_cwd_source_dir)
         .context(config::source_dir_hint())?;
 
     // Find skill in source
@@ -651,7 +652,9 @@ fn find_installed_skill(target_dir: &Path, name: &str) -> Option<PathBuf> {
 }
 
 fn install_profile(profile_name: &str, global: bool, force: bool) -> Result<()> {
-    let source_dir = config::find_source_dir().context(config::source_dir_hint())?;
+    let source_dir = config::find_source_dir()
+        .or_else(config::find_cwd_source_dir)
+        .context(config::source_dir_hint())?;
     let resolved = config::resolve_profile(profile_name, &source_dir)?;
 
     let target_dir = if global {
@@ -968,7 +971,7 @@ fn list(installed: bool, local: bool, global: bool, profiles: bool, json: bool) 
     }
 
     // Default: grouped view showing all skills with install status
-    if let Some(source_dir) = config::find_source_dir() {
+    if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
         let skill_groups = config::skill_groups(&source_dir);
         let mut total = 0usize;
         let mut total_installed = 0usize;
@@ -1097,7 +1100,7 @@ fn which(name: &str) -> Result<()> {
     }
 
     // Check source library
-    if let Some(source_dir) = config::find_source_dir() {
+    if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
         if let Some(path) = find_skill_in_source(&source_dir, name) {
             println!("{}", path.display());
             return Ok(());
@@ -1285,7 +1288,9 @@ fn update_single_skill(skill_path: &Path, display_name: &str, scope: &str) -> Re
 }
 
 fn list_profiles_display(json: bool) -> Result<()> {
-    let source_dir = config::find_source_dir().context(config::source_dir_hint())?;
+    let source_dir = config::find_source_dir()
+        .or_else(config::find_cwd_source_dir)
+        .context(config::source_dir_hint())?;
     let profiles = config::list_profiles(&source_dir);
 
     if json {

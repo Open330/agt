@@ -557,7 +557,9 @@ fn which_exists(cmd: &str) -> bool {
 }
 
 fn hooks_source_dir() -> Result<PathBuf> {
-    let source = config::find_source_dir().with_context(|| config::source_dir_hint())?;
+    let source = config::find_source_dir()
+        .or_else(config::find_cwd_source_dir)
+        .with_context(|| config::source_dir_hint())?;
     Ok(source.join("hooks"))
 }
 
