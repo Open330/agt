@@ -562,7 +562,7 @@ fn load_all_templates() -> Result<BTreeMap<String, TeamTemplate>> {
     let mut templates = BTreeMap::new();
 
     // 1. Bundled templates from source dir
-    if let Some(source_dir) = config::find_source_dir() {
+    if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
         load_templates_from_dir(&source_dir.join("teams"), &mut templates);
     }
 

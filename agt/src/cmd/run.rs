@@ -50,7 +50,7 @@ fn load_skill(name: &str) -> Result<String> {
         local
     } else if global.exists() {
         global
-    } else if let Some(source_dir) = config::find_source_dir() {
+    } else if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
         find_skill_in_source(&source_dir, name)
             .context(format!("Skill '{}' not found", name))?
     } else {
@@ -78,7 +78,7 @@ fn auto_match_skill(prompt: &str) -> Option<String> {
     }
 
     // Check library
-    if let Some(source_dir) = config::find_source_dir() {
+    if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
         for group in config::skill_groups(&source_dir) {
             let group_dir = source_dir.join(&group);
             if let Some(content) = match_skills_in_dir(&group_dir, &prompt_lower) {

@@ -30,7 +30,7 @@ fn is_static_index_installed() -> bool {
 
 /// Refresh the static-index after persona changes
 fn refresh_static_index() {
-    if let Some(source_dir) = config::find_source_dir() {
+    if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
         let script = source_dir
             .join("context")
             .join("static-index")
@@ -68,7 +68,7 @@ fn suggest_static_index() {
             .unwrap_or(false);
 
         if confirmed {
-            if let Some(source_dir) = config::find_source_dir() {
+            if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
                 let skill_path = source_dir.join("context").join("static-index");
                 if skill_path.is_dir() && skill_path.join("SKILL.md").exists() {
                     let target = config::global_skill_target().join("context");
@@ -268,7 +268,8 @@ fn install(
     }
 
     let source_dir = config::find_source_dir()
-        .context(config::source_dir_hint())?;
+        .or_else(config::find_cwd_source_dir)
+        .context("No personas found. Install from a skills repo or set AGT_DIR.")?;
     let persona_lib = config::persona_library(&source_dir);
 
     if all {
@@ -687,7 +688,7 @@ fn list(installed: bool, local: bool, global: bool, json: bool) -> Result<()> {
 
     // Default: show all library personas with install status
     // Collect library entries
-    if let Some(source_dir) = config::find_source_dir() {
+    if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
         let lib_dir = config::persona_library(&source_dir);
         if lib_dir.is_dir() {
             list_personas_in_dir(&lib_dir, "library", &mut entries)?;
@@ -961,7 +962,7 @@ fn find_persona(name: &str) -> Result<PathBuf> {
     }
 
     // Check library (dir or .md)
-    if let Some(source_dir) = config::find_source_dir() {
+    if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
         let lib = config::persona_library(&source_dir);
         let lib_dir = lib.join(name);
         let lib_md = lib.join(format!("{}.md", name));
