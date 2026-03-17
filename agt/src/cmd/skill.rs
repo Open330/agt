@@ -736,7 +736,8 @@ fn interactive_install(global: bool, force: bool) -> Result<()> {
     let selection = if let Some(ref sd) = source_dir {
         ui::interactive::run_interactive_selector(sd, &local_installed, &global_installed)?
     } else {
-        ui::interactive::run_no_source_selector()?
+        let cwd_source = config::find_cwd_source_dir();
+        ui::interactive::run_no_source_selector(cwd_source)?
     };
 
     match selection {
@@ -762,6 +763,9 @@ fn interactive_install(global: bool, force: bool) -> Result<()> {
         }
         ui::interactive::InteractiveSelection::CloneAndInstall => {
             clone_and_install(global, force)
+        }
+        ui::interactive::InteractiveSelection::LocalRepo(path) => {
+            local_repo_install(&path, global, force)
         }
         ui::interactive::InteractiveSelection::Cancelled => {
             ui::info("Installation cancelled.");
@@ -813,6 +817,44 @@ fn clone_and_install(global: bool, force: bool) -> Result<()> {
                 return Ok(());
             }
             install_selected_skills(&target, &skills, global, force)
+        }
+        ui::interactive::InteractiveSelection::Remote(spec) => {
+            install_remote(&spec, global, force)
+        }
+        _ => {
+            ui::info("Installation cancelled.");
+            Ok(())
+        }
+    }
+}
+
+fn local_repo_install(source_dir: &Path, global: bool, force: bool) -> Result<()> {
+    ui::info(&format!(
+        "Using local skills source: {}",
+        source_dir.display()
+    ));
+    eprintln!();
+    let local_installed = installed_skill_names(&config::local_skill_target());
+    let global_installed = installed_skill_names(&config::global_skill_target());
+
+    let selection =
+        ui::interactive::run_interactive_selector(source_dir, &local_installed, &global_installed)?;
+
+    match selection {
+        ui::interactive::InteractiveSelection::Profile(prof_name) => {
+            let resolved = config::resolve_profile(&prof_name, source_dir)?;
+            if !ui::interactive::confirm_install(&resolved.skills, global)? {
+                ui::info("Installation cancelled.");
+                return Ok(());
+            }
+            install_profile(&prof_name, global, force)
+        }
+        ui::interactive::InteractiveSelection::Skills(skills) => {
+            if !ui::interactive::confirm_install(&skills, global)? {
+                ui::info("Installation cancelled.");
+                return Ok(());
+            }
+            install_selected_skills(source_dir, &skills, global, force)
         }
         ui::interactive::InteractiveSelection::Remote(spec) => {
             install_remote(&spec, global, force)

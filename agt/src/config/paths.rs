@@ -60,6 +60,22 @@ pub fn find_source_dir() -> Option<PathBuf> {
     None
 }
 
+/// Check if CWD (or its git root) is itself a skills source directory.
+/// This detects when the user is inside a skills repo like `agent-skills`.
+pub fn find_cwd_source_dir() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    if has_skill_groups(&cwd) {
+        return Some(cwd);
+    }
+    // Walk up to git root and check there too
+    if let Some(root) = git_root() {
+        if root != cwd && has_skill_groups(&root) {
+            return Some(root);
+        }
+    }
+    None
+}
+
 /// Hint message when no source directory is found
 pub fn source_dir_hint() -> String {
     let home = dirs::home_dir()
@@ -72,7 +88,7 @@ pub fn source_dir_hint() -> String {
     )
 }
 
-fn has_skill_groups(dir: &Path) -> bool {
+pub fn has_skill_groups(dir: &Path) -> bool {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();

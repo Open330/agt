@@ -1,7 +1,7 @@
 use crate::config;
 use anyhow::{bail, Context, Result};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, MultiSelect, Select};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Max visible items per page for Select/MultiSelect to prevent rendering bugs
 /// when the list exceeds terminal height.
@@ -44,6 +44,7 @@ pub enum InteractiveSelection {
     Skills(Vec<(String, String)>),
     Remote(String),
     CloneAndInstall,
+    LocalRepo(PathBuf),
     Cancelled,
 }
 
@@ -229,19 +230,40 @@ fn browse_by_group(
     }
 }
 
-pub fn run_no_source_selector() -> Result<InteractiveSelection> {
+pub fn run_no_source_selector(
+    cwd_source: Option<PathBuf>,
+) -> Result<InteractiveSelection> {
     let theme = ColorfulTheme::default();
 
-    eprintln!("No skills source found. To get all skills:");
-    eprintln!("  git clone https://github.com/jiunbae/agent-skills ~/.agent-skills\n");
+    if cwd_source.is_some() {
+        eprintln!("No installed skills source found. A local skills repo was detected.\n");
+    } else {
+        eprintln!("No skills source found. To get all skills:");
+        eprintln!("  git clone https://github.com/jiunbae/agent-skills ~/.agent-skills\n");
+    }
 
-    let modes = &[
-        "Clone jiunbae/agent-skills and install a profile",
-        "Install from remote (owner/repo/path)",
-    ];
+    // Build menu options with typed enum tags to avoid stringly-typed dispatch
+    enum Action {
+        Local(PathBuf),
+        Clone,
+        Remote,
+    }
+
+    let mut modes: Vec<String> = Vec::new();
+    let mut actions: Vec<Action> = Vec::new();
+
+    if let Some(p) = cwd_source {
+        modes.push(format!("Install from local repo ({})", p.display()));
+        actions.push(Action::Local(p));
+    }
+    modes.push("Clone jiunbae/agent-skills and install a profile".into());
+    actions.push(Action::Clone);
+    modes.push("Install from remote (owner/repo/path)".into());
+    actions.push(Action::Remote);
+
     let mode = Select::with_theme(&theme)
         .with_prompt("How would you like to install skills?")
-        .items(modes)
+        .items(&modes)
         .default(0)
         .max_length(PAGE_SIZE)
         .interact_opt()
@@ -249,9 +271,12 @@ pub fn run_no_source_selector() -> Result<InteractiveSelection> {
 
     match mode {
         None => Ok(InteractiveSelection::Cancelled),
-        Some(0) => Ok(InteractiveSelection::CloneAndInstall),
-        Some(1) => prompt_remote(&theme),
-        _ => unreachable!(),
+        Some(i) => match actions.into_iter().nth(i) {
+            Some(Action::Local(p)) => Ok(InteractiveSelection::LocalRepo(p)),
+            Some(Action::Clone) => Ok(InteractiveSelection::CloneAndInstall),
+            Some(Action::Remote) => prompt_remote(&theme),
+            None => unreachable!(),
+        },
     }
 }
 
