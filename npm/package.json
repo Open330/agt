@@ -1,18 +1,22 @@
 {
   "name": "@open330/agt",
-  "version": "2026.3.18",
+  "version": "2026.3.19",
   "description": "agt — A modular toolkit for extending AI coding agents",
   "bin": {
     "agt": "bin/agt.js"
   },
+  "files": [
+    "bin/agt.js",
+    "scripts/postinstall.js"
+  ],
   "scripts": {
     "postinstall": "node scripts/postinstall.js"
   },
   "optionalDependencies": {
-    "@open330/agt-darwin-arm64": "2026.3.18",
-    "@open330/agt-darwin-x64": "2026.3.18",
-    "@open330/agt-linux-x64": "2026.3.18",
-    "@open330/agt-linux-arm64": "2026.3.18"
+    "@open330/agt-darwin-arm64": "2026.3.19",
+    "@open330/agt-darwin-x64": "2026.3.19",
+    "@open330/agt-linux-x64": "2026.3.19",
+    "@open330/agt-linux-arm64": "2026.3.19"
   },
   "repository": {
     "type": "git",
