@@ -5,9 +5,7 @@ const path = require("path");
 
 const PLATFORM_MAP = {
   "darwin-arm64": "@open330/agt-darwin-arm64",
-  "darwin-x64": "@open330/agt-darwin-x64",
   "linux-x64": "@open330/agt-linux-x64",
-  "linux-arm64": "@open330/agt-linux-arm64",
 };
 
 const platform = `${process.platform}-${process.arch}`;
@@ -26,6 +24,14 @@ if (pkg) {
 // Fallback: binary downloaded by postinstall
 if (!binary) {
   binary = path.join(__dirname, binName);
+}
+
+if (!binary || !require("fs").existsSync(binary)) {
+  console.error(
+    `agt: native binary not found for ${platform}.\n` +
+    `Try reinstalling: npm install -g @open330/agt`
+  );
+  process.exit(1);
 }
 
 try {

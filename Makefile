@@ -34,3 +34,8 @@ dist: cross-all
 	cp agt/target/aarch64-apple-darwin/release/agt npm/platforms/darwin-arm64/bin/agt
 	cp agt/target/x86_64-unknown-linux-musl/release/agt npm/platforms/linux-x64/bin/agt
 	@echo "Binaries distributed to npm/platforms/*"
+
+# Bump version across all packages
+bump:
+	@test -n "$(VERSION)" || (echo "Usage: make bump VERSION=2026.3.22" && exit 1)
+	bash scripts/bump-version.sh $(VERSION)
