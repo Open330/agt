@@ -1,6 +1,46 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+/// Deserializes a field that can be either a YAML array or a comma-separated string.
+fn string_or_vec<'de, D>(deserializer: D) -> std::result::Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct StringOrVec;
+
+    impl<'de> de::Visitor<'de> for StringOrVec {
+        type Value = Option<Vec<String>>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a string or list of strings")
+        }
+
+        fn visit_str<E: de::Error>(self, s: &str) -> std::result::Result<Self::Value, E> {
+            Ok(Some(s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()))
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error> {
+            let mut v = Vec::new();
+            while let Some(s) = seq.next_element::<String>()? {
+                v.push(s);
+            }
+            Ok(Some(v))
+        }
+
+        fn visit_none<E: de::Error>(self) -> std::result::Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> std::result::Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(StringOrVec)
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct Frontmatter {
     pub name: Option<String>,
@@ -9,8 +49,9 @@ pub struct Frontmatter {
     pub domain: Option<String>,
     #[serde(rename = "type")]
     pub kind: Option<String>,
+    #[serde(default, deserialize_with = "string_or_vec")]
     pub tags: Option<Vec<String>>,
-    #[serde(rename = "trigger-keywords")]
+    #[serde(rename = "trigger-keywords", default, deserialize_with = "string_or_vec")]
     pub trigger_keywords: Option<Vec<String>>,
     #[serde(rename = "allowed-tools")]
     #[allow(dead_code)]

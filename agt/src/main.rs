@@ -78,6 +78,9 @@ enum Commands {
         /// Specify skill by name
         #[arg(long)]
         skill: Option<String>,
+        /// LLM to use: claude, codex, opencode, gemini, ollama
+        #[arg(long)]
+        llm: Option<String>,
     },
     /// Generate shell completion scripts
     Completions {
@@ -102,8 +105,8 @@ fn main() {
         Commands::Hook { action } => cmd::hook::execute(action),
         Commands::Team { action } => cmd::team::execute(action),
         Commands::Persona { action } => cmd::persona::execute(action),
-        Commands::Run { prompt, skill } => {
-            cmd::run::execute(&prompt.join(" "), skill.as_deref())
+        Commands::Run { prompt, skill, llm } => {
+            cmd::run::execute(&prompt.join(" "), skill.as_deref(), llm.as_deref())
         }
         Commands::Completions { shell } => {
             generate_completions(shell);

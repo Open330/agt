@@ -29,6 +29,18 @@ fn command_exists(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Parse an LLM CLI name string into LlmCli enum.
+pub fn parse_cli(name: &str) -> anyhow::Result<LlmCli> {
+    match name.to_lowercase().as_str() {
+        "claude" => Ok(LlmCli::Claude),
+        "codex" => Ok(LlmCli::Codex),
+        "opencode" => Ok(LlmCli::OpenCode),
+        "gemini" => Ok(LlmCli::Gemini),
+        "ollama" => Ok(LlmCli::Ollama),
+        _ => anyhow::bail!("Unknown LLM: '{}'. Options: claude, codex, opencode, gemini, ollama", name),
+    }
+}
+
 /// Detect available LLM CLI.
 /// Priority: codex > claude (skip if CLAUDECODE set) > opencode > gemini > ollama
 pub fn detect() -> Option<LlmCli> {
@@ -53,6 +65,27 @@ pub fn detect() -> Option<LlmCli> {
         return Some(LlmCli::Ollama);
     }
 
+    None
+}
+
+/// Detect LLM CLI with claude as first priority (ignores CLAUDECODE env).
+/// Used for non-interactive prompt execution where claude -p is preferred.
+pub fn detect_prefer_claude() -> Option<LlmCli> {
+    if command_exists("claude") {
+        return Some(LlmCli::Claude);
+    }
+    if command_exists("codex") {
+        return Some(LlmCli::Codex);
+    }
+    if command_exists("opencode") {
+        return Some(LlmCli::OpenCode);
+    }
+    if command_exists("gemini") {
+        return Some(LlmCli::Gemini);
+    }
+    if command_exists("ollama") {
+        return Some(LlmCli::Ollama);
+    }
     None
 }
 
