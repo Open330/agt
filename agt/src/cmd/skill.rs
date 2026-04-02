@@ -73,6 +73,18 @@ pub enum SkillAction {
         #[arg(short, long)]
         local: bool,
     },
+    /// Run a prompt with an optional skill (omit skill to call LLM directly)
+    #[command(alias = "run")]
+    Use {
+        /// Skill name (optional — omit to call LLM directly)
+        #[arg(long, short)]
+        skill: Option<String>,
+        /// LLM to use: claude, codex, opencode, gemini, ollama
+        #[arg(long)]
+        llm: Option<String>,
+        /// The prompt to execute
+        prompt: Vec<String>,
+    },
 }
 
 pub fn execute(action: SkillAction) -> Result<()> {
@@ -100,6 +112,13 @@ pub fn execute(action: SkillAction) -> Result<()> {
             global,
             local,
         } => update(name, global, local),
+        SkillAction::Use { skill, llm, prompt } => {
+            let prompt_str = prompt.join(" ");
+            if prompt_str.trim().is_empty() {
+                bail!("No prompt provided. Usage: agt skill use \"your prompt\" [-s skill_name]");
+            }
+            super::run::execute(&prompt_str, skill.as_deref(), llm.as_deref())
+        }
     }
 }
 
