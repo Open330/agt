@@ -1,9 +1,12 @@
 {
   "name": "@open330/agt-linux-x64",
-  "version": "2026.4.2",
+  "version": "2026.4.3",
   "description": "agt binary for Linux x64",
   "os": ["linux"],
   "cpu": ["x64"],
+  "files": [
+    "bin/agt"
+  ],
   "bin": {
     "agt": "bin/agt"
   },
