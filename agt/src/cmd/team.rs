@@ -2,6 +2,7 @@ use crate::{config, ui};
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use colored::Colorize;
+use comfy_table::Cell;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -144,10 +145,7 @@ fn list(json_output: bool) -> Result<()> {
         return Ok(());
     }
 
-    eprintln!();
-    eprintln!("{}", "Agent Team Templates".cyan().bold());
-    eprintln!("{}", "════════════════════════════════════════".cyan());
-    eprintln!();
+    ui::section("Agent Team Templates");
 
     if templates.is_empty() {
         eprintln!("  No team templates found.");
@@ -156,23 +154,17 @@ fn list(json_output: bool) -> Result<()> {
         return Ok(());
     }
 
+    let mut table = ui::table::new_table();
+    table.set_header(&["Name", "Description", "Teammates", "Tasks"]);
     for (name, template) in &templates {
-        let name_display = format!("{:<20}", name);
-        eprintln!(
-            "  {} {} ({} teammates, {} tasks)",
-            name_display.green().bold(),
-            template.description,
-            template.teammates.len().to_string().cyan(),
-            template.tasks.len().to_string().yellow(),
-        );
-        for mate in &template.teammates {
-            eprintln!(
-                "    {} {}",
-                format!("- {}", mate.role).dimmed(),
-                mate.description.dimmed()
-            );
-        }
+        ui::table::add_row(&mut table, &[
+            name,
+            &template.description,
+            &template.teammates.len().to_string(),
+            &template.tasks.len().to_string(),
+        ]);
     }
+    println!("{table}");
 
     eprintln!();
     eprintln!("  Use: agt team create <name>  to generate a team spawn prompt");
@@ -186,72 +178,63 @@ fn list(json_output: bool) -> Result<()> {
 fn show(name: &str) -> Result<()> {
     let template = load_template(name)?;
 
-    eprintln!();
-    eprintln!("  {} {}", "Team:".bold(), template.name.green().bold());
-    eprintln!("  {} {}", "Description:".bold(), template.description);
-    eprintln!(
-        "  {} {}",
-        "Display mode:".bold(),
-        template.teammate_mode.cyan()
-    );
-    eprintln!(
-        "  {} {}",
-        "Plan approval:".bold(),
-        if template.plan_approval { "yes" } else { "no" }
-    );
+    ui::section(&template.name);
 
+    let mut info = ui::table::new_table();
+    info.set_header(&["Property", "Value"]);
+    ui::table::add_row(&mut info, &["Description", &template.description]);
+    ui::table::add_row(&mut info, &["Display mode", &template.teammate_mode]);
+    ui::table::add_row(&mut info, &[
+        "Plan approval",
+        if template.plan_approval { "yes" } else { "no" },
+    ]);
     if !template.skills.is_empty() {
-        eprintln!("  {} {}", "Required skills:".bold(), template.skills.join(", "));
+        ui::table::add_row(&mut info, &["Required skills", &template.skills.join(", ")]);
     }
+    println!("{info}");
 
-    eprintln!();
-    eprintln!("  {}", "Teammates:".bold());
-    for (i, mate) in template.teammates.iter().enumerate() {
-        eprintln!(
-            "    {}. {} — {}",
-            i + 1,
-            mate.role.cyan().bold(),
-            mate.description
-        );
-        if let Some(ref persona) = mate.persona {
-            eprintln!("       {} {}", "persona:".dimmed(), persona);
+    if !template.teammates.is_empty() {
+        println!("\n{}", "Teammates".bold());
+        let mut t = ui::table::new_table();
+        t.set_header(&["#", "Role", "Description"]);
+        for (i, m) in template.teammates.iter().enumerate() {
+            ui::table::add_row_cells(&mut t, vec![
+                Cell::new(&(i + 1).to_string()),
+                Cell::new(&m.role),
+                Cell::new(&m.description),
+            ]);
         }
-        if !mate.skills.is_empty() {
-            eprintln!("       {} {}", "skills:".dimmed(), mate.skills.join(", "));
-        }
-        if mate.plan_approval {
-            eprintln!("       {} required", "plan approval:".dimmed());
-        }
+        println!("{t}");
     }
 
     if !template.tasks.is_empty() {
-        eprintln!();
-        eprintln!("  {}", "Initial tasks:".bold());
+        println!("\n{}", "Initial tasks".bold());
+        let mut t = ui::table::new_table();
+        t.set_header(&["#", "Title", "Assignee"]);
         for (i, task) in template.tasks.iter().enumerate() {
-            let assignee = task
-                .assignee
-                .as_deref()
-                .unwrap_or("unassigned");
-            eprintln!(
-                "    {}. {} [{}]",
-                i + 1,
-                task.title,
-                assignee.yellow()
-            );
-            if !task.depends_on.is_empty() {
-                eprintln!("       depends on: {}", task.depends_on.join(", "));
-            }
+            let assignee = task.assignee.as_deref().unwrap_or("unassigned");
+            ui::table::add_row_cells(&mut t, vec![
+                Cell::new(&(i + 1).to_string()),
+                Cell::new(&task.title),
+                Cell::new(assignee),
+            ]);
         }
+        println!("{t}");
     }
 
     if !template.hooks.is_empty() {
-        eprintln!();
-        eprintln!("  {}", "Hooks:".bold());
+        println!("\n{}", "Hooks".bold());
+        let mut t = ui::table::new_table();
+        t.set_header(&["Event", "Type"]);
         for (event, hooks) in &template.hooks {
             for h in hooks {
-                eprintln!("    {} [{}]", event, h.hook_type.dimmed());
+                ui::table::add_row_cells(&mut t, vec![
+                    Cell::new(event),
+                    Cell::new(&h.hook_type),
+                ]);
             }
         }
+        println!("{t}");
     }
 
     eprintln!();

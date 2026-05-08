@@ -677,12 +677,15 @@ fn list(installed: bool, local: bool, global: bool, json: bool) -> Result<()> {
             ui::info("No installed personas found.");
             return Ok(());
         }
+        let mut table = ui::table::new_table();
+        table.set_header(&["Name", "Scope", "Role"]);
         for entry in &entries {
             let name = entry["name"].as_str().unwrap_or("");
             let scope = entry["scope"].as_str().unwrap_or("");
             let role = entry["role"].as_str().unwrap_or("");
-            println!("  {} {:28} {}", scope, name, role);
+            ui::table::add_row(&mut table, &[name, scope, role]);
         }
+        println!("{table}");
         return Ok(());
     }
 
@@ -726,6 +729,7 @@ fn list(installed: bool, local: bool, global: bool, json: bool) -> Result<()> {
     let mut by_type: BTreeMap<String, Vec<&serde_json::Value>> = BTreeMap::new();
     for entry in &entries {
         let kind = entry["type"].as_str().unwrap_or("other").to_string();
+        let kind = if kind.is_empty() { "other".to_string() } else { kind };
         by_type.entry(kind).or_default().push(entry);
     }
 
@@ -739,47 +743,33 @@ fn list(installed: bool, local: bool, global: bool, json: bool) -> Result<()> {
         })
         .count();
 
-    println!(
-        "{}  ({}=local {}=global {}=not installed)",
-        "Available personas".cyan(),
-        "L".green(),
-        "G".blue(),
-        "○".dimmed()
-    );
-    println!("{}", "=".repeat(40));
+    ui::section("Available Personas");
 
     for (kind, personas) in &by_type {
-        println!("\n{}", format!("{}/", kind).yellow().bold());
+        ui::subsection(&format!("{}/", kind));
 
+        let mut table = ui::table::new_table();
         for entry in personas {
             let name = entry["name"].as_str().unwrap_or("");
             let role = entry["role"].as_str().unwrap_or("");
 
             let status = if local_installed.contains(&name.to_string()) {
-                format!("{}", "L".green())
+                "L".green().bold().to_string()
             } else if global_installed.contains(&name.to_string()) {
-                format!("{}", "G".blue())
+                "G".blue().bold().to_string()
             } else {
-                format!("{}", "○".dimmed())
+                "○".dimmed().to_string()
             };
 
-            let role_display = if role.chars().count() > 40 {
-                let truncated: String = role.chars().take(37).collect();
-                format!("{}...", truncated)
-            } else {
-                role.to_string()
-            };
-
-            println!("  {} {:28} {}", status, name, role_display);
+            let role_styled = role.dimmed().to_string();
+            ui::table::add_row(&mut table, &[status.as_str(), name, role_styled.as_str()]);
+        }
+        if !personas.is_empty() {
+            println!("{table}");
         }
     }
 
-    println!(
-        "\n{}: total {} / installed {}",
-        "Summary".cyan(),
-        total,
-        total_installed
-    );
+    ui::info(&format!("Total: {} personas, {} installed", total, total_installed));
 
     Ok(())
 }
@@ -841,24 +831,27 @@ fn show(name: &str) -> Result<()> {
 
     let (fm, body) = frontmatter::parse(&content)?;
 
+    let mut table = ui::table::new_table();
+    table.set_header(&["Field", "Value"]);
     if let Some(n) = &fm.name {
-        println!("Name:        {}", n);
+        ui::table::add_row(&mut table, &["Name", n]);
     }
     if let Some(role) = &fm.role {
-        println!("Role:        {}", role);
+        ui::table::add_row(&mut table, &["Role", role]);
     }
     if let Some(domain) = &fm.domain {
-        println!("Domain:      {}", domain);
+        ui::table::add_row(&mut table, &["Domain", domain]);
     }
     if let Some(kind) = &fm.kind {
-        println!("Type:        {}", kind);
+        ui::table::add_row(&mut table, &["Type", kind]);
     }
     if let Some(desc) = &fm.description {
-        println!("Description: {}", desc);
+        ui::table::add_row(&mut table, &["Description", desc]);
     }
     if let Some(tags) = &fm.tags {
-        println!("Tags:        {}", tags.join(", "));
+        ui::table::add_row(&mut table, &["Tags", &tags.join(", ")]);
     }
+    println!("{table}");
     println!();
     println!("{}", body);
 

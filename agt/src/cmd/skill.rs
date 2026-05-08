@@ -1021,15 +1021,7 @@ fn list(installed: bool, local: bool, global: bool, profiles: bool, json: bool) 
             return Ok(());
         }
 
-        // Grouped display matching agent-skill format
-        println!(
-            "{}  ({}=local {}=global {}=not installed)",
-            "Available skills".cyan(),
-            "L".green(),
-            "G".blue(),
-            "○".dimmed()
-        );
-        println!("{}", "=".repeat(40));
+        ui::section("Available Skills");
 
         for group in &skill_groups {
             let skills = config::skills_in_group(&source_dir, group);
@@ -1041,31 +1033,31 @@ fn list(installed: bool, local: bool, global: bool, profiles: bool, json: bool) 
             total += skills.len();
             total_installed += group_installed;
 
-            println!(
-                "\n{} ({}/{})",
-                format!("{}/", group).yellow().bold(),
-                group_installed,
-                skills.len()
-            );
+            ui::subsection(&format!("{}/ ({}/{})", group, group_installed, skills.len()));
 
+            let mut table = ui::table::new_table();
             for skill_name in &skills {
                 let status = if local_installed.contains(skill_name) {
-                    format!("{}", "L".green())
+                    "L".green().bold().to_string()
                 } else if global_installed.contains(skill_name) {
-                    format!("{}", "G".blue())
+                    "G".blue().bold().to_string()
                 } else {
-                    format!("{}", "○".dimmed())
+                    "○".dimmed().to_string()
                 };
-                println!("  {} {:28}", status, skill_name);
+                let desc = read_skill_description(&source_dir.join(group).join(skill_name));
+                let desc_styled = desc.dimmed().to_string();
+                ui::table::add_row(&mut table, &[
+                    status.as_str(),
+                    skill_name,
+                    desc_styled.as_str(),
+                ]);
+            }
+            if !skills.is_empty() {
+                println!("{table}");
             }
         }
 
-        println!(
-            "\n{}: total {} / installed {}",
-            "Summary".cyan(),
-            total,
-            total_installed
-        );
+        ui::info(&format!("Total: {} skills, {} installed", total, total_installed));
     } else {
         // No source dir — infer groups from symlink targets
         list_skills_in_dir(&local_dir, "local", &mut entries)?;
@@ -1327,17 +1319,14 @@ fn list_profiles_display(json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}", "Installation profiles".cyan());
-    println!("{}", "=".repeat(40));
+    let mut table = ui::table::new_table();
+    table.set_header(&["Profile", "Description", "Skills"]);
     for (name, desc, count) in &profiles {
-        println!(
-            "  {:16} {:32} ({} skills)",
-            name.green(),
-            desc,
-            count
-        );
+        ui::table::add_row(&mut table, &[name, desc, &count.to_string()]);
     }
-    println!("\nUsage: agt skill install --profile <name> [-g]");
+    println!("{}", "Installation Profiles".cyan().bold());
+    println!("{table}");
+    println!("Usage: agt skill install --profile <name> [-g]");
     Ok(())
 }
 
@@ -1498,11 +1487,23 @@ fn dedup_skill_entries(entries: &mut Vec<serde_json::Value>) {
 fn read_skill_description(path: &Path) -> String {
     let skill_md = path.join("SKILL.md");
     if let Ok(content) = fs::read_to_string(skill_md) {
-        if let Some(desc) = frontmatter::get_field(&content, "description") {
-            return desc;
+        if let Ok((fm, _)) = frontmatter::parse(&content) {
+            if let Some(desc) = fm.description {
+                return truncate_description(&desc);
+            }
         }
     }
     String::new()
+}
+
+fn truncate_description(desc: &str) -> String {
+    let trimmed = desc.trim();
+    if trimmed.chars().count() > 80 {
+        let truncated: String = trimmed.chars().take(77).collect();
+        format!("{}...", truncated)
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn print_grouped_installed(local_dir: &Path, global_dir: &Path) {
@@ -1574,48 +1575,38 @@ fn print_grouped_installed(local_dir: &Path, global_dir: &Path) {
             .push((skill_name, scope.clone()));
     }
 
-    println!(
-        "{}  ({}=local {}=global)",
-        "Installed skills".cyan(),
-        "L".green(),
-        "G".blue()
-    );
-    println!("{}", "=".repeat(40));
+    ui::section("Installed Skills");
 
     let mut total = 0usize;
     for (group, skills) in &groups {
         total += skills.len();
-        println!(
-            "\n{} ({})",
-            format!("{}/", group).yellow().bold(),
-            skills.len()
-        );
+        ui::subsection(&format!("{}/ ({})", group, skills.len()));
+        let mut table = ui::table::new_table();
         for (name, scope) in skills {
             let tag = if scope == "local" {
-                format!("{}", "L".green())
+                "L".green().bold().to_string()
             } else {
-                format!("{}", "G".blue())
+                "G".blue().bold().to_string()
             };
-            println!("  {} {}", tag, name);
+            ui::table::add_row(&mut table, &[tag.as_str(), name.as_str()]);
         }
+        println!("{table}");
     }
 
-    println!("\n{}: {} installed", "Summary".cyan(), total);
+    ui::info(&format!("{} installed", total));
     eprintln!("\nTo see all available skills:");
     eprintln!("  git clone https://github.com/jiunbae/agent-skills ~/.agent-skills");
     eprintln!("  agt skill install            # interactive installer");
 }
 
 fn print_flat(entries: &[serde_json::Value]) {
+    let mut table = ui::table::new_table();
+    table.set_header(&["Skill", "Scope", "Description"]);
     for entry in entries {
         let name = entry["name"].as_str().unwrap_or("");
         let scope = entry["scope"].as_str().unwrap_or("");
         let desc = entry["description"].as_str().unwrap_or("");
-
-        if desc.is_empty() {
-            println!("{:30} [{}]", name, scope);
-        } else {
-            println!("{:30} [{}] {}", name, scope, desc);
-        }
+        ui::table::add_row(&mut table, &[name, scope, desc]);
     }
+    println!("{table}");
 }
