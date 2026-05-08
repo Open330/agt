@@ -147,52 +147,37 @@ fn list(json_output: bool) -> Result<()> {
         return Ok(());
     }
 
-    eprintln!();
-    eprintln!(
-        "{}  ({} installed / {} available)",
-        "Hooks".cyan().bold(),
-        "✓".green(),
-        "○".red()
-    );
-    eprintln!("{}", "════════════════════════════════════════".cyan());
-    eprintln!();
+    ui::section("Hooks");
 
+    let mut table = ui::table::new_table();
+    table.set_header(&["Status", "Type", "Name", "Event", "Description"]);
     for (name, def) in &registry {
         let is_installed = is_hook_installed(name, def, &installed);
         let icon = if is_installed {
-            "✓".green()
+            "✓".green().to_string()
         } else {
-            "○".red()
+            "○".red().to_string()
         };
         let type_badge = match def.hook_type {
-            HookType::Command => "cmd".blue(),
-            HookType::Http => "http".magenta(),
-            HookType::Prompt => "prompt".yellow(),
-            HookType::Agent => "agent".cyan(),
+            HookType::Command => "cmd".blue().to_string(),
+            HookType::Http => "http".magenta().to_string(),
+            HookType::Prompt => "prompt".yellow().to_string(),
+            HookType::Agent => "agent".cyan().to_string(),
         };
-        let name_display = format!("{:<24}", name);
-        let name_colored = if is_installed {
-            name_display.green()
+        let event_text = if let Some(ref m) = def.matcher {
+            format!("{} (matcher: {})", def.event, m).dimmed().to_string()
         } else {
-            name_display.normal()
+            def.event.dimmed().to_string()
         };
-        eprintln!(
-            "  {} [{}] {} {}",
-            icon, type_badge, name_colored, def.description
-        );
-        eprintln!(
-            "       {} {}{}",
-            "event:".dimmed(),
-            def.event.dimmed(),
-            def.matcher
-                .as_ref()
-                .map(|m| format!(" (matcher: {})", m))
-                .unwrap_or_default()
-                .dimmed()
-        );
+        ui::table::add_row(&mut table, &[
+            icon.as_str(),
+            type_badge.as_str(),
+            name,
+            event_text.as_str(),
+            &def.description,
+        ]);
     }
-
-    eprintln!();
+    println!("{table}");
     Ok(())
 }
 
@@ -204,43 +189,46 @@ fn show(name: &str) -> Result<()> {
         .get(name)
         .with_context(|| format!("Hook '{}' not found in registry", name))?;
 
-    eprintln!();
-    eprintln!("  {} {}", "Hook:".bold(), name.green().bold());
-    eprintln!("  {} {}", "Type:".bold(), def.hook_type.to_string().cyan());
-    eprintln!("  {} {}", "Event:".bold(), def.event);
-    eprintln!("  {} {}", "Description:".bold(), def.description);
+    ui::section(name);
 
+    let mut table = ui::table::new_table();
+    table.set_header(&["Property", "Value"]);
+    ui::table::add_row(&mut table, &["Type", &def.hook_type.to_string()]);
+    ui::table::add_row(&mut table, &["Event", &def.event]);
+    ui::table::add_row(&mut table, &["Description", &def.description]);
     if let Some(ref matcher) = def.matcher {
-        eprintln!("  {} {}", "Matcher:".bold(), matcher);
+        ui::table::add_row(&mut table, &["Matcher", matcher]);
     }
     if let Some(ref msg) = def.status_message {
-        eprintln!("  {} {}", "Status message:".bold(), msg);
+        ui::table::add_row(&mut table, &["Status message", msg]);
     }
     if let Some(timeout) = def.timeout {
-        eprintln!("  {} {}s", "Timeout:".bold(), timeout);
+        ui::table::add_row(&mut table, &["Timeout", &format!("{}s", timeout)]);
     }
 
     match def.hook_type {
         HookType::Command => {
             if let Some(ref script) = def.script {
-                eprintln!("  {} {}", "Script:".bold(), script);
+                ui::table::add_row(&mut table, &["Script", script]);
             }
             if def.is_async == Some(true) {
-                eprintln!("  {} true", "Async:".bold());
+                ui::table::add_row(&mut table, &["Async", "true"]);
             }
         }
         HookType::Http => {
             if let Some(ref url) = def.url {
-                eprintln!("  {} {}", "URL:".bold(), url);
+                ui::table::add_row(&mut table, &["URL", url]);
             }
             if let Some(ref headers) = def.headers {
-                eprintln!("  {}", "Headers:".bold());
-                for (k, v) in headers {
-                    eprintln!("    {}: {}", k, v);
-                }
+                let header_text = headers
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", k, v))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                ui::table::add_row(&mut table, &["Headers", &header_text]);
             }
             if let Some(ref vars) = def.allowed_env_vars {
-                eprintln!("  {} {}", "Allowed env vars:".bold(), vars.join(", "));
+                ui::table::add_row(&mut table, &["Allowed env vars", &vars.join(", ")]);
             }
         }
         HookType::Prompt | HookType::Agent => {
@@ -250,15 +238,15 @@ fn show(name: &str) -> Result<()> {
                 } else {
                     prompt.clone()
                 };
-                eprintln!("  {} {}", "Prompt:".bold(), display);
+                ui::table::add_row(&mut table, &["Prompt", &display]);
             }
             if let Some(ref model) = def.model {
-                eprintln!("  {} {}", "Model:".bold(), model);
+                ui::table::add_row(&mut table, &["Model", model]);
             }
         }
     }
 
-    eprintln!();
+    println!("{table}");
     Ok(())
 }
 

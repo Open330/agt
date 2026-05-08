@@ -1,23 +1,33 @@
 pub mod interactive;
+pub mod table;
 
 use colored::Colorize;
 
 pub fn info(msg: &str) {
-    eprintln!("{} {}", "[INFO]".blue(), msg);
+    eprintln!(" {}  {}", "ℹ".blue().bold(), msg);
 }
 
 pub fn success(msg: &str) {
-    eprintln!("{} {}", "[OK]".green(), msg);
+    eprintln!(" {}  {}", "✓".green().bold(), msg);
 }
 
 pub fn warn(msg: &str) {
-    eprintln!("{} {}", "[WARN]".yellow(), msg);
+    eprintln!(" {}  {}", "⚠".yellow().bold(), msg);
 }
 
 pub fn error(msg: &str) {
-    eprintln!("{} {}", "[ERROR]".red(), msg);
+    eprintln!(" {}  {}", "✗".red().bold(), msg);
 }
 
 pub fn hint(msg: &str) {
-    eprintln!("{} {}", "[HINT]".cyan(), msg);
+    eprintln!(" {}  {}", "→".cyan().bold(), msg);
+}
+
+pub fn section(title: &str) {
+    eprintln!();
+    eprintln!("{}", format!("╭─ {} ─", title).cyan().bold());
+}
+
+pub fn subsection(title: &str) {
+    eprintln!("{}", format!("{} ", title).yellow().bold());
 }

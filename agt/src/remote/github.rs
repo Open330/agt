@@ -105,6 +105,10 @@ const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 
 /// Download a single file from raw.githubusercontent.com
 pub fn fetch_file(spec: &RemoteSpec) -> Result<Vec<u8>> {
+    let spinner = indicatif::ProgressBar::new_spinner();
+    spinner.set_message(format!("Fetching {}...", spec.path));
+    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+
     let url = format!(
         "https://raw.githubusercontent.com/{}/{}/{}/{}",
         spec.owner, spec.repo, spec.git_ref, spec.path
@@ -121,6 +125,7 @@ pub fn fetch_file(spec: &RemoteSpec) -> Result<Vec<u8>> {
         .read_to_end(&mut body)
         .context("Failed to read response")?;
 
+    spinner.finish_and_clear();
     Ok(body)
 }
 
@@ -128,6 +133,10 @@ pub fn fetch_file(spec: &RemoteSpec) -> Result<Vec<u8>> {
 /// Returns (TempDir, path_to_extracted_content).
 /// The TempDir must be kept alive by the caller — dropping it cleans up.
 pub fn fetch_dir(spec: &RemoteSpec) -> Result<(TempDir, PathBuf)> {
+    let spinner = indicatif::ProgressBar::new_spinner();
+    spinner.set_message(format!("Downloading {}/{}@{}...", spec.owner, spec.repo, spec.git_ref));
+    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+
     let tmp_dir = TempDir::new().context("Failed to create temp directory")?;
 
     // Try API tarball (works with auth for private repos), then archive URLs
@@ -212,6 +221,7 @@ pub fn fetch_dir(spec: &RemoteSpec) -> Result<(TempDir, PathBuf)> {
         p
     };
 
+    spinner.finish_and_clear();
     Ok((tmp_dir, target_path))
 }
 
