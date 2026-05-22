@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            platform: linux-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: darwin-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl-tools (Linux)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build release binary
+        run: cargo build --release --manifest-path agt/Cargo.toml --target ${{ matrix.target }}
+
+      - name: Stage binary for npm
+        run: |
+          mkdir -p npm/platforms/${{ matrix.platform }}/bin
+          cp agt/target/${{ matrix.target }}/release/agt npm/platforms/${{ matrix.platform }}/bin/agt
+
+      - name: Create release tarball
+        run: |
+          cd agt/target/${{ matrix.target }}/release
+          tar czf "${{ github.workspace }}/agt-${{ matrix.target }}.tar.gz" agt
+
+      - name: Upload npm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-${{ matrix.platform }}
+          path: npm/platforms/${{ matrix.platform }}/bin/agt
+          if-no-files-found: error
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: agt-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  publish-npm:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download npm artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Sync version in all package.json files
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          for pkg in npm/package.json npm/platforms/linux-x64/package.json npm/platforms/darwin-arm64/package.json npm/platforms/darwin-x64/package.json npm/platforms/linux-arm64/package.json; do
+            if [ -f "$pkg" ]; then
+              node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('$pkg','utf8')); p.version='$VERSION'; fs.writeFileSync('$pkg', JSON.stringify(p,null,2)+'\\n');"
+            fi
+          done
+
+      - name: Place binaries into npm platform directories
+        run: |
+          mkdir -p npm/platforms/linux-x64/bin
+          mkdir -p npm/platforms/darwin-arm64/bin
+          cp artifacts/npm-linux-x64/agt npm/platforms/linux-x64/bin/agt
+          cp artifacts/npm-darwin-arm64/agt npm/platforms/darwin-arm64/bin/agt
+          chmod +x npm/platforms/*/bin/agt
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd npm/platforms/linux-x64   && npm publish --access public && cd -
+          cd npm/platforms/darwin-arm64 && npm publish --access public && cd -
+
+      - name: Publish wrapper package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: cd npm && npm publish --access public
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: release-*
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/release-*/agt-*.tar.gz
+          generate_release_notes: true
