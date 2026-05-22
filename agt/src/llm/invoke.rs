@@ -10,13 +10,7 @@ use std::thread;
 pub fn invoke(cli: LlmCli, prompt: &str) -> Result<String> {
     let mut child = match cli {
         LlmCli::Codex => {
-            // Codex sandboxes via bubblewrap on Linux, which needs unprivileged
-            // user namespaces. Hardened hosts (e.g. Ubuntu 24.04's AppArmor
-            // userns restriction) block that, breaking headless runs. Allow the
-            // sandbox mode to be overridden: AGT_CODEX_SANDBOX =
-            // read-only | workspace-write | danger-full-access.
-            let sandbox =
-                std::env::var("AGT_CODEX_SANDBOX").unwrap_or_else(|_| "workspace-write".to_string());
+            let sandbox = codex_sandbox_mode();
             Command::new("codex")
                 .args(["exec", "--sandbox", &sandbox, "--skip-git-repo-check", "-"])
                 .stdin(Stdio::piped())
@@ -101,4 +95,52 @@ pub fn invoke(cli: LlmCli, prompt: &str) -> Result<String> {
     }
 
     Ok(output)
+}
+
+/// Resolve the codex `--sandbox` mode.
+///
+/// An explicit `AGT_CODEX_SANDBOX` (read-only | workspace-write |
+/// danger-full-access) always wins. Otherwise default to `workspace-write`,
+/// but auto-fall back to `danger-full-access` on Linux hosts where the kernel
+/// blocks unprivileged user namespaces: codex's sandbox uses bubblewrap, which
+/// needs them, so on hardened hosts (e.g. Ubuntu 24.04's AppArmor userns
+/// restriction) the sandboxed run would otherwise fail to start.
+fn codex_sandbox_mode() -> String {
+    if let Ok(mode) = std::env::var("AGT_CODEX_SANDBOX") {
+        return mode;
+    }
+
+    #[cfg(target_os = "linux")]
+    if !userns_available() {
+        crate::ui::warn(
+            "Unprivileged user namespaces are blocked; running codex without its OS sandbox \
+             (danger-full-access). Set AGT_CODEX_SANDBOX to override.",
+        );
+        return "danger-full-access".to_string();
+    }
+
+    "workspace-write".to_string()
+}
+
+/// Probe whether this process can create an unprivileged user namespace,
+/// which is exactly what codex's bubblewrap sandbox requires. Tested in a
+/// throwaway child so the current process is left untouched.
+#[cfg(target_os = "linux")]
+fn userns_available() -> bool {
+    unsafe {
+        match libc::fork() {
+            // Child: try to enter a new user namespace and report via exit code.
+            0 => {
+                let rc = libc::unshare(libc::CLONE_NEWUSER);
+                libc::_exit(if rc == 0 { 0 } else { 1 });
+            }
+            // Fork failed unexpectedly — don't disable the sandbox over a fluke.
+            -1 => true,
+            pid => {
+                let mut status: libc::c_int = 0;
+                libc::waitpid(pid, &mut status, 0);
+                libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0
+            }
+        }
+    }
 }
