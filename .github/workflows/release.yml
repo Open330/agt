@@ -67,10 +67,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download npm artifacts
+      - name: Download linux-x64 artifact
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          name: npm-linux-x64
+          path: npm/platforms/linux-x64/bin/
+
+      - name: Download darwin-arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-darwin-arm64
+          path: npm/platforms/darwin-arm64/bin/
+
+      - name: Make binaries executable
+        run: chmod +x npm/platforms/*/bin/agt
 
       - name: Extract version from tag
         id: version
@@ -85,26 +95,23 @@ jobs:
             fi
           done
 
-      - name: Place binaries into npm platform directories
-        run: |
-          mkdir -p npm/platforms/linux-x64/bin
-          mkdir -p npm/platforms/darwin-arm64/bin
-          cp artifacts/npm-linux-x64/agt npm/platforms/linux-x64/bin/agt
-          cp artifacts/npm-darwin-arm64/agt npm/platforms/darwin-arm64/bin/agt
-          chmod +x npm/platforms/*/bin/agt
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Verify npm authentication
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm whoami
+
       - name: Publish platform packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          cd npm/platforms/linux-x64   && npm publish --access public && cd -
-          cd npm/platforms/darwin-arm64 && npm publish --access public && cd -
+          cd npm/platforms/linux-x64   && npm publish --access public && cd ../..
+          cd npm/platforms/darwin-arm64 && npm publish --access public && cd ../..
 
       - name: Publish wrapper package
         env:
