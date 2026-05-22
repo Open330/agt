@@ -9,13 +9,22 @@ use std::thread;
 /// Streams stdout in real-time so users can see progress.
 pub fn invoke(cli: LlmCli, prompt: &str) -> Result<String> {
     let mut child = match cli {
-        LlmCli::Codex => Command::new("codex")
-            .args(["exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "-"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("Failed to spawn codex")?,
+        LlmCli::Codex => {
+            // Codex sandboxes via bubblewrap on Linux, which needs unprivileged
+            // user namespaces. Hardened hosts (e.g. Ubuntu 24.04's AppArmor
+            // userns restriction) block that, breaking headless runs. Allow the
+            // sandbox mode to be overridden: AGT_CODEX_SANDBOX =
+            // read-only | workspace-write | danger-full-access.
+            let sandbox =
+                std::env::var("AGT_CODEX_SANDBOX").unwrap_or_else(|_| "workspace-write".to_string());
+            Command::new("codex")
+                .args(["exec", "--sandbox", &sandbox, "--skip-git-repo-check", "-"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .context("Failed to spawn codex")?
+        }
 
         LlmCli::Claude => Command::new("claude")
             .args(["-p", "-", "--output-format", "text", "--dangerously-skip-permissions"])
