@@ -10,7 +10,7 @@ use std::thread;
 pub fn invoke(cli: LlmCli, prompt: &str) -> Result<String> {
     let mut child = match cli {
         LlmCli::Codex => Command::new("codex")
-            .args(["exec", "--full-auto", "-"])
+            .args(["exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "-"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
