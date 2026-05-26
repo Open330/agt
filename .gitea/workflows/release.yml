@@ -178,14 +178,27 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -e
+          V="${{ steps.ver.outputs.version }}"
           for p in linux-x64 linux-arm64 darwin-arm64; do
-            (cd "npm/platforms/$p" && npm publish --access public)
+            PKG="@open330/agt-$p"
+            if npm view "$PKG@$V" version >/dev/null 2>&1; then
+              echo "↩ skip $PKG@$V (already on registry)"
+            else
+              (cd "npm/platforms/$p" && npm publish --access public)
+            fi
           done
 
       - name: Publish wrapper package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: cd npm && npm publish --access public
+        run: |
+          set -e
+          V="${{ steps.ver.outputs.version }}"
+          if npm view "@open330/agt@$V" version >/dev/null 2>&1; then
+            echo "↩ skip @open330/agt@$V (already on registry)"
+          else
+            cd npm && npm publish --access public
+          fi
 
       - name: Verify published platforms match optionalDependencies
         run: node npm/scripts/verify-platform-packages.js
