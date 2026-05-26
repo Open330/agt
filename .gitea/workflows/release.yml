@@ -162,12 +162,16 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: npm auth check
+      - name: Configure npm auth
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          # Granular access tokens (npm_mc... prefix) lack the user:read
+          # scope that `npm whoami` requires, so the readback returns 401
+          # even though publish itself succeeds. Skip the check; the
+          # subsequent `npm publish` calls will surface auth errors.
           echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
-          npm whoami
+          echo "always-auth=true" >> ~/.npmrc
 
       - name: Publish platform packages
         env:
