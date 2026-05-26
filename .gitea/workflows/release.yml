@@ -57,8 +57,9 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
-    container:
-      image: messense/cargo-zigbuild:latest
+    # Default container (catthehacker/ubuntu:act-latest) has node + apt + pip,
+    # which JS actions need. We add rust + zig manually so the build can
+    # cross-compile to musl from arm64 host with a single linker (zig).
     strategy:
       fail-fast: false
       matrix:
@@ -70,14 +71,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Toolchain
+      - name: Show env
         run: |
           uname -smr
-          rustup show
-          rustup target add ${{ matrix.target }}
+          node --version
+          which apt-get pip3 python3 curl
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal \
+                       -t ${{ matrix.target }}
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install Zig
+        run: |
+          ZIG_VER=0.13.0
+          ARCH=$(uname -m)
+          mkdir -p "$HOME/.local"
+          curl -sSL "https://ziglang.org/download/${ZIG_VER}/zig-linux-${ARCH}-${ZIG_VER}.tar.xz" \
+            | tar -xJ -C "$HOME/.local"
+          mv "$HOME/.local/zig-linux-${ARCH}-${ZIG_VER}" "$HOME/.local/zig"
+          echo "$HOME/.local/zig" >> "$GITHUB_PATH"
+          "$HOME/.local/zig/zig" version
+
+      - name: Install cargo-zigbuild
+        run: |
+          export PATH="$HOME/.cargo/bin:$HOME/.local/zig:$PATH"
+          cargo install --locked cargo-zigbuild
 
       - name: Build (zigbuild)
-        run: cargo zigbuild --release --manifest-path agt/Cargo.toml --target ${{ matrix.target }}
+        run: |
+          export PATH="$HOME/.cargo/bin:$HOME/.local/zig:$PATH"
+          cargo zigbuild --release --manifest-path agt/Cargo.toml --target ${{ matrix.target }}
 
       - name: Stage outputs
         run: |
