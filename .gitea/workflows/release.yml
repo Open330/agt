@@ -191,12 +191,13 @@ jobs:
         run: node npm/scripts/verify-platform-packages.js
 
   # Optional: create a GitHub release with tarballs so postinstall.js fallback
-  # download path keeps working. Requires a personal access token with `contents:write`
-  # on Open330/agt stored as GH_RELEASE_TOKEN. Skipped silently if absent.
+  # download path keeps working. Requires a personal access token with
+  # `Contents: Read and write` on Open330/agt stored as GH_RELEASE_TOKEN
+  # (fine-grained PAT). Skipped silently if the secret is absent.
   github-release:
-    needs: [build-darwin-arm64, build-linux]
+    needs: [build-darwin-arm64, build-linux, publish-npm]
     runs-on: ubuntu-latest
-    if: ${{ inputs.dry_run != 'true' && startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ inputs.dry_run != 'true' }}
     steps:
       - uses: actions/download-artifact@v3
         with: { name: agt-darwin-arm64, path: dl/darwin-arm64 }
@@ -219,7 +220,13 @@ jobs:
             echo "GH_RELEASE_TOKEN secret not set on Gitea repo; skipping GitHub release upload."
             exit 0
           fi
-          TAG="${GITHUB_REF_NAME}"
+          # Tag-triggered runs use GITHUB_REF_NAME directly; workflow_dispatch
+          # runs (ref=main) derive the tag from the version input.
+          if [ -n "${{ inputs.version }}" ]; then
+            TAG="v${{ inputs.version }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
           REPO="Open330/agt"
           # Find or create release on GitHub
           RID=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
