@@ -135,9 +135,11 @@ jobs:
 
       - name: Stage binaries into platform packages
         run: |
+          # upload-artifact@v3 strips the common path prefix from the
+          # uploaded list, so `out/agt` lands at `dl/<artifact>/agt`.
           for p in darwin-arm64 linux-x64 linux-arm64; do
             mkdir -p "npm/platforms/$p/bin"
-            install -m 0755 "dl/$p/out/agt" "npm/platforms/$p/bin/agt"
+            install -m 0755 "dl/$p/agt" "npm/platforms/$p/bin/agt"
           done
           ls -la npm/platforms/*/bin/agt
 
@@ -202,7 +204,7 @@ jobs:
       - name: Collect tarballs
         run: |
           mkdir -p release
-          cp dl/*/out/*.tar.gz release/
+          cp dl/*/*.tar.gz release/
           ls -la release/
 
       - name: Push tarballs to GitHub release
