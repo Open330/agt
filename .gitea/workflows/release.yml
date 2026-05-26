@@ -1,0 +1,208 @@
+name: Release
+
+# GitHub (Open330/agt) is the source of truth. Gitea mirrors it (jiunbae/agt)
+# every 8h or via webhook. Tag pushes (`v*`) trigger this workflow and publish
+# to public npmjs.com.
+#
+# Runners:
+#   ubuntu-latest  Docker mode (jiun-mini). Linux jobs run inside the per-job
+#                  container image declared below.
+#   macos-arm64    Host mode (jiun-mini-macos). Native darwin-arm64 build.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Override version (without leading v). Empty = derive from tag.'
+        required: false
+      dry_run:
+        description: 'Build only — skip npm publish and GitHub release upload.'
+        required: false
+        default: 'false'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-darwin-arm64:
+    runs-on: macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          uname -smr
+          rustup show
+          rustup target add aarch64-apple-darwin
+
+      - name: Build
+        run: cargo build --release --manifest-path agt/Cargo.toml --target aarch64-apple-darwin
+
+      - name: Stage outputs
+        run: |
+          mkdir -p out
+          cp agt/target/aarch64-apple-darwin/release/agt out/agt
+          file out/agt
+          tar -C out -czf "out/agt-aarch64-apple-darwin.tar.gz" agt
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: agt-darwin-arm64
+          path: |
+            out/agt
+            out/agt-aarch64-apple-darwin.tar.gz
+
+  build-linux:
+    runs-on: ubuntu-latest
+    container:
+      image: messense/cargo-zigbuild:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            platform: linux-x64
+          - target: aarch64-unknown-linux-musl
+            platform: linux-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          uname -smr
+          rustup show
+          rustup target add ${{ matrix.target }}
+
+      - name: Build (zigbuild)
+        run: cargo zigbuild --release --manifest-path agt/Cargo.toml --target ${{ matrix.target }}
+
+      - name: Stage outputs
+        run: |
+          mkdir -p out
+          cp agt/target/${{ matrix.target }}/release/agt out/agt
+          file out/agt
+          tar -C out -czf "out/agt-${{ matrix.target }}.tar.gz" agt
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: agt-${{ matrix.platform }}
+          path: |
+            out/agt
+            out/agt-${{ matrix.target }}.tar.gz
+
+  publish-npm:
+    needs: [build-darwin-arm64, build-linux]
+    runs-on: ubuntu-latest
+    if: ${{ inputs.dry_run != 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v3
+        with: { name: agt-darwin-arm64, path: dl/darwin-arm64 }
+      - uses: actions/download-artifact@v3
+        with: { name: agt-linux-x64,    path: dl/linux-x64 }
+      - uses: actions/download-artifact@v3
+        with: { name: agt-linux-arm64,  path: dl/linux-arm64 }
+
+      - name: Stage binaries into platform packages
+        run: |
+          for p in darwin-arm64 linux-x64 linux-arm64; do
+            mkdir -p "npm/platforms/$p/bin"
+            install -m 0755 "dl/$p/out/agt" "npm/platforms/$p/bin/agt"
+          done
+          ls -la npm/platforms/*/bin/agt
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            V="${{ inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Releasing version: $V"
+
+      - name: Bump versions across all manifests
+        run: bash scripts/bump-version.sh "${{ steps.ver.outputs.version }}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: npm auth check
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
+          npm whoami
+
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -e
+          for p in linux-x64 linux-arm64 darwin-arm64; do
+            (cd "npm/platforms/$p" && npm publish --access public)
+          done
+
+      - name: Publish wrapper package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: cd npm && npm publish --access public
+
+      - name: Verify published platforms match optionalDependencies
+        run: node npm/scripts/verify-platform-packages.js
+
+  # Optional: create a GitHub release with tarballs so postinstall.js fallback
+  # download path keeps working. Requires a personal access token with `contents:write`
+  # on Open330/agt stored as GITHUB_RELEASE_TOKEN. Skipped silently if absent.
+  github-release:
+    needs: [build-darwin-arm64, build-linux]
+    runs-on: ubuntu-latest
+    if: ${{ inputs.dry_run != 'true' && startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: actions/download-artifact@v3
+        with: { name: agt-darwin-arm64, path: dl/darwin-arm64 }
+      - uses: actions/download-artifact@v3
+        with: { name: agt-linux-x64,    path: dl/linux-x64 }
+      - uses: actions/download-artifact@v3
+        with: { name: agt-linux-arm64,  path: dl/linux-arm64 }
+
+      - name: Collect tarballs
+        run: |
+          mkdir -p release
+          cp dl/*/out/*.tar.gz release/
+          ls -la release/
+
+      - name: Push tarballs to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_RELEASE_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "GITHUB_RELEASE_TOKEN secret not set on Gitea repo; skipping GitHub release upload."
+            exit 0
+          fi
+          TAG="${GITHUB_REF_NAME}"
+          REPO="Open330/agt"
+          # Find or create release on GitHub
+          RID=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO/releases/tags/$TAG" | jq -r '.id // empty')
+          if [ -z "$RID" ]; then
+            RID=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/json" \
+              "https://api.github.com/repos/$REPO/releases" \
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"generate_release_notes\":true}" \
+              | jq -r '.id')
+          fi
+          echo "GitHub release id: $RID"
+          for f in release/*.tar.gz; do
+            curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: application/gzip" \
+              --data-binary "@${f}" \
+              "https://uploads.github.com/repos/$REPO/releases/$RID/assets?name=$(basename "$f")" \
+              | jq '{name, browser_download_url}'
+          done
