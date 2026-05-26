@@ -192,7 +192,7 @@ jobs:
 
   # Optional: create a GitHub release with tarballs so postinstall.js fallback
   # download path keeps working. Requires a personal access token with `contents:write`
-  # on Open330/agt stored as GITHUB_RELEASE_TOKEN. Skipped silently if absent.
+  # on Open330/agt stored as GH_RELEASE_TOKEN. Skipped silently if absent.
   github-release:
     needs: [build-darwin-arm64, build-linux]
     runs-on: ubuntu-latest
@@ -213,10 +213,10 @@ jobs:
 
       - name: Push tarballs to GitHub release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "GITHUB_RELEASE_TOKEN secret not set on Gitea repo; skipping GitHub release upload."
+            echo "GH_RELEASE_TOKEN secret not set on Gitea repo; skipping GitHub release upload."
             exit 0
           fi
           TAG="${GITHUB_REF_NAME}"
