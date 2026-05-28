@@ -10,9 +10,18 @@ use std::thread;
 pub fn invoke(cli: LlmCli, prompt: &str) -> Result<String> {
     let mut child = match cli {
         LlmCli::Codex => {
-            let sandbox = codex_sandbox_mode();
+            // Default to fully-bypassed approvals+sandbox — that's the only mode
+            // that makes sense for an unattended `agt skill use` run. If the user
+            // sets AGT_CODEX_SANDBOX (read-only | workspace-write |
+            // danger-full-access), we hand control back to codex's --sandbox flag.
+            let mut args: Vec<String> = vec!["exec".into()];
+            match std::env::var("AGT_CODEX_SANDBOX") {
+                Ok(mode) => args.extend(["--sandbox".into(), mode]),
+                Err(_) => args.push("--dangerously-bypass-approvals-and-sandbox".into()),
+            }
+            args.extend(["--skip-git-repo-check".into(), "-".into()]);
             Command::new("codex")
-                .args(["exec", "--sandbox", &sandbox, "--skip-git-repo-check", "-"])
+                .args(&args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -105,62 +114,3 @@ pub fn invoke(cli: LlmCli, prompt: &str) -> Result<String> {
     Ok(output)
 }
 
-/// Resolve the codex `--sandbox` mode.
-///
-/// An explicit `AGT_CODEX_SANDBOX` (read-only | workspace-write |
-/// danger-full-access) always wins. Otherwise default to `workspace-write`,
-/// but auto-fall back to `danger-full-access` on Linux hosts where the kernel
-/// blocks unprivileged user namespaces: codex's sandbox uses bubblewrap, which
-/// needs them, so on hardened hosts (e.g. Ubuntu 24.04's AppArmor userns
-/// restriction) the sandboxed run would otherwise fail to start.
-fn codex_sandbox_mode() -> String {
-    if let Ok(mode) = std::env::var("AGT_CODEX_SANDBOX") {
-        return mode;
-    }
-
-    #[cfg(target_os = "linux")]
-    if !userns_available() {
-        // Show the heads-up once per machine — every-invocation noise is annoying
-        // when there's no actionable change from the user's side. Removing the
-        // marker re-arms the notice (e.g. if they wipe ~/.cache).
-        let marker = dirs::cache_dir().map(|d| d.join("agt").join("codex-userns-warned"));
-        if !marker.as_ref().is_some_and(|p| p.exists()) {
-            crate::ui::warn(
-                "Unprivileged user namespaces are blocked; running codex without its OS sandbox \
-                 (danger-full-access). Shown once — set AGT_CODEX_SANDBOX to override.",
-            );
-            if let Some(p) = marker {
-                if let Some(parent) = p.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&p, b"");
-            }
-        }
-        return "danger-full-access".to_string();
-    }
-
-    "workspace-write".to_string()
-}
-
-/// Probe whether this process can create an unprivileged user namespace,
-/// which is exactly what codex's bubblewrap sandbox requires. Tested in a
-/// throwaway child so the current process is left untouched.
-#[cfg(target_os = "linux")]
-fn userns_available() -> bool {
-    unsafe {
-        match libc::fork() {
-            // Child: try to enter a new user namespace and report via exit code.
-            0 => {
-                let rc = libc::unshare(libc::CLONE_NEWUSER);
-                libc::_exit(if rc == 0 { 0 } else { 1 });
-            }
-            // Fork failed unexpectedly — don't disable the sandbox over a fluke.
-            -1 => true,
-            pid => {
-                let mut status: libc::c_int = 0;
-                libc::waitpid(pid, &mut status, 0);
-                libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0
-            }
-        }
-    }
-}
