@@ -88,6 +88,12 @@ fn auto_match_skills(prompt: &str) -> Option<String> {
 
     scored.sort_by(|a, b| b.0.cmp(&a.0));
 
+    // Keep only skills scoring within half of the top match, capped at 5.
+    // Drops weak namespace/tag-only matches when a clear winner exists.
+    let cutoff = scored[0].0.div_ceil(2);
+    scored.retain(|(s, _, _)| *s >= cutoff);
+    scored.truncate(5);
+
     let names: Vec<&str> = scored.iter().map(|(_, n, _)| n.as_str()).collect();
     ui::info(&format!("Matched skills: {}", names.join(", ")));
 
@@ -166,8 +172,8 @@ fn score_skill(
         }
     }
 
-    for segment in name.split('/') {
-        if prompt_lower.contains(&segment.to_lowercase()) {
+    if let Some(skill_segment) = name.rsplit('/').next() {
+        if prompt_lower.contains(&skill_segment.to_lowercase()) {
             score += 5;
         }
     }
