@@ -120,10 +120,22 @@ fn codex_sandbox_mode() -> String {
 
     #[cfg(target_os = "linux")]
     if !userns_available() {
-        crate::ui::warn(
-            "Unprivileged user namespaces are blocked; running codex without its OS sandbox \
-             (danger-full-access). Set AGT_CODEX_SANDBOX to override.",
-        );
+        // Show the heads-up once per machine — every-invocation noise is annoying
+        // when there's no actionable change from the user's side. Removing the
+        // marker re-arms the notice (e.g. if they wipe ~/.cache).
+        let marker = dirs::cache_dir().map(|d| d.join("agt").join("codex-userns-warned"));
+        if !marker.as_ref().is_some_and(|p| p.exists()) {
+            crate::ui::warn(
+                "Unprivileged user namespaces are blocked; running codex without its OS sandbox \
+                 (danger-full-access). Shown once — set AGT_CODEX_SANDBOX to override.",
+            );
+            if let Some(p) = marker {
+                if let Some(parent) = p.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&p, b"");
+            }
+        }
         return "danger-full-access".to_string();
     }
 
