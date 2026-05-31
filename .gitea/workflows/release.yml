@@ -201,7 +201,17 @@ jobs:
           fi
 
       - name: Verify published platforms match optionalDependencies
-        run: node npm/scripts/verify-platform-packages.js
+        # Registry CDN can lag a few seconds after publish; retry with
+        # backoff before declaring failure.
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if node npm/scripts/verify-platform-packages.js; then
+              exit 0
+            fi
+            echo "verify attempt $i failed; waiting 10s for npm CDN propagation..."
+            sleep 10
+          done
+          exit 1
 
   # Optional: create a GitHub release with tarballs so postinstall.js fallback
   # download path keeps working. Requires a personal access token with
