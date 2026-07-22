@@ -40,7 +40,7 @@ enum Commands {
             Template locations (searched in order):\n  \
               .claude/teams/           Project-local (highest priority)\n  \
               ~/.claude/teams/         User global\n  \
-              teams/                   Library (bundled)\n\n\
+              teams/                   Local source checkout\n\n\
             Quick start:\n  \
               agt team enable           Enable agent teams in Claude Code\n  \
               agt team list             See available team templates\n  \
@@ -60,7 +60,7 @@ enum Commands {
             Persona locations (searched in order):\n  \
               .agents/personas/        Project-local (highest priority)\n  \
               ~/.agents/personas/      User global\n  \
-              personas/                Library (bundled)\n\n\
+              personas/                Local source checkout\n\n\
             Usage with different agents:\n  \
               Claude Code  Read the persona file path in conversation\n  \
               Codex        agt persona review <name> --codex\n  \

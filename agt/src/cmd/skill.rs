@@ -168,12 +168,16 @@ fn install(
     };
 
     if let Some(spec_str) = from {
+        if name.is_some() && profile_name.is_some() {
+            bail!("Cannot specify both a skill name and --profile/--all");
+        }
         return install_remote(
             &spec_str,
             global,
             agent,
             force,
             profile_name.as_deref(),
+            name.as_deref(),
         );
     }
 
@@ -248,15 +252,19 @@ fn install_remote(
     agent: config::SkillAgent,
     force: bool,
     profile: Option<&str>,
+    requested_name: Option<&str>,
 ) -> Result<()> {
     let spec = remote::parse_spec(spec_str)?;
 
     // Repo-level: owner/repo with no path — browse all skills
     if spec.path.is_empty() {
-        return install_remote_repo(&spec, global, agent, force, profile);
+        return install_remote_repo(&spec, global, agent, force, profile, requested_name);
     }
     if profile.is_some() {
         bail!("--profile/--all requires a repository-level --from spec");
+    }
+    if requested_name.is_some() {
+        bail!("A skill name cannot be combined with a path-level --from spec");
     }
 
     ui::info(&format!("Downloading {}...", spec));
@@ -277,8 +285,11 @@ fn install_remote(
 
     let target_dir = config::skill_target(global, agent);
 
-    fs::create_dir_all(&target_dir)?;
-    let dest = target_dir.join(&skill_name);
+    let group = remote_skill_group(&spec.path);
+    let dest = config::skill_destination(&target_dir, &group, &skill_name, agent);
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
 
     util::ensure_target_clear(&dest, force, &skill_name)?;
 
@@ -286,11 +297,24 @@ fn install_remote(
     remote::write_metadata(&dest, &spec)?;
 
     let scope = if global { "global" } else { "local" };
+    let installed_name = if group.is_empty() {
+        skill_name.clone()
+    } else {
+        format!("{group}/{skill_name}")
+    };
     ui::success(&format!(
         "Installed remote skill '{}' ({}, {}) from {}",
-        skill_name, scope, agent, spec
+        installed_name, scope, agent, spec
     ));
     Ok(())
+}
+
+fn remote_skill_group(path: &str) -> String {
+    Path::new(path)
+        .parent()
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 fn install_remote_repo(
@@ -299,8 +323,12 @@ fn install_remote_repo(
     agent: config::SkillAgent,
     force: bool,
     profile: Option<&str>,
+    requested_name: Option<&str>,
 ) -> Result<()> {
-    ui::info(&format!("Downloading {}/{}@{}...", spec.owner, spec.repo, spec.git_ref));
+    ui::info(&format!(
+        "Downloading {}/{}@{}...",
+        spec.owner, spec.repo, spec.git_ref
+    ));
     let (_tmp_dir, repo_root) = remote::fetch_dir(spec)?;
 
     // Discover skills in the repo (directories containing SKILL.md)
@@ -337,7 +365,25 @@ fn install_remote_repo(
     fs::create_dir_all(&target_dir)?;
 
     let scope = if global { "global" } else { "local" };
-    let skills_to_install = if let Some(profile_name) = profile {
+    let skills_to_install = if let Some(requested_name) = requested_name {
+        util::validate_name(requested_name)?;
+        let matches = skills_named(&all_skills, requested_name);
+        match matches.len() {
+            0 => bail!(
+                "Skill '{}' not found in {}/{}",
+                requested_name,
+                spec.owner,
+                spec.repo
+            ),
+            1 => matches,
+            _ => bail!(
+                "Skill name '{}' is ambiguous in {}/{}",
+                requested_name,
+                spec.owner,
+                spec.repo
+            ),
+        }
+    } else if let Some(profile_name) = profile {
         config::resolve_profile(profile_name, &repo_root)?.skills
     } else if is_tty {
         let local_installed = installed_skill_names(&config::skill_target(false, agent));
@@ -437,6 +483,14 @@ fn install_remote_repo(
     }
 
     Ok(())
+}
+
+fn skills_named(all_skills: &[(String, String)], requested_name: &str) -> Vec<(String, String)> {
+    all_skills
+        .iter()
+        .filter(|(_, skill_name)| skill_name == requested_name)
+        .cloned()
+        .collect()
 }
 
 /// Execute [[setup.copy]] rules from agt.toml in the given directory.
@@ -819,7 +873,7 @@ fn interactive_install(global: bool, agent: config::SkillAgent, force: bool) -> 
             install_selected_skills(&sd, &skills, global, agent, force)
         }
         ui::interactive::InteractiveSelection::Remote(spec) => {
-            install_remote(&spec, global, agent, force, None)
+            install_remote(&spec, global, agent, force, None, None)
         }
         ui::interactive::InteractiveSelection::CloneAndInstall => {
             clone_and_install(global, agent, force)
@@ -879,7 +933,7 @@ fn clone_and_install(global: bool, agent: config::SkillAgent, force: bool) -> Re
             install_selected_skills(&target, &skills, global, agent, force)
         }
         ui::interactive::InteractiveSelection::Remote(spec) => {
-            install_remote(&spec, global, agent, force, None)
+            install_remote(&spec, global, agent, force, None, None)
         }
         _ => {
             ui::info("Installation cancelled.");
@@ -922,7 +976,7 @@ fn local_repo_install(
             install_selected_skills(source_dir, &skills, global, agent, force)
         }
         ui::interactive::InteractiveSelection::Remote(spec) => {
-            install_remote(&spec, global, agent, force, None)
+            install_remote(&spec, global, agent, force, None, None)
         }
         _ => {
             ui::info("Installation cancelled.");
@@ -1664,4 +1718,31 @@ fn print_flat(entries: &[serde_json::Value]) {
         ui::table::add_row(&mut table, &[name, scope, desc]);
     }
     println!("{table}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{remote_skill_group, skills_named};
+
+    #[test]
+    fn remote_path_preserves_immediate_parent_as_group() {
+        assert_eq!(remote_skill_group("common/korean-editor"), "common");
+    }
+
+    #[test]
+    fn root_remote_path_has_no_group() {
+        assert_eq!(remote_skill_group("korean-editor"), "");
+    }
+
+    #[test]
+    fn requested_remote_name_selects_only_that_skill() {
+        let skills = vec![
+            ("agents".to_string(), "background-reviewer".to_string()),
+            ("common".to_string(), "korean-editor".to_string()),
+        ];
+        assert_eq!(
+            skills_named(&skills, "korean-editor"),
+            vec![("common".to_string(), "korean-editor".to_string())]
+        );
+    }
 }

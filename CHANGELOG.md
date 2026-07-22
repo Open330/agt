@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Defined `Open330/agt` as the single source of truth for the Rust CLI, npm
+  packages, platform binaries, and release automation.
+- Replaced the legacy catalog installer with an npm CLI bootstrap that can
+  optionally install skills from `jiunbae/agent-skills`.
+- Limited supported npm platform manifests to Darwin ARM64, Linux x64, and
+  Linux ARM64.
+
+### Removed
+- Removed the duplicated skill catalog, personas, hooks, static context,
+  profiles, and legacy Bash/PowerShell skill installers.
+- Removed the inactive Darwin x64 platform manifest.
+
 ### Added
 - `agt skill` 명령의 `--agent codex` 설치·조회·제거·업데이트 지원
 - 원격 저장소의 프로필을 바로 설치하는 `--from <repo> --profile <name>` 조합
