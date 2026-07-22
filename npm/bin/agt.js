@@ -2,11 +2,7 @@
 
 const { execFileSync } = require("child_process");
 const path = require("path");
-
-const PLATFORM_MAP = {
-  "darwin-arm64": "@open330/agt-darwin-arm64",
-  "linux-x64": "@open330/agt-linux-x64",
-};
+const { PLATFORM_PACKAGES } = require("../lib/platforms");
 
 const platform = `${process.platform}-${process.arch}`;
 const binName = process.platform === "win32" ? "agt.exe" : "agt";
@@ -14,7 +10,7 @@ const binName = process.platform === "win32" ? "agt.exe" : "agt";
 let binary;
 
 // Try platform-specific optional dependency
-const pkg = PLATFORM_MAP[platform];
+const pkg = PLATFORM_PACKAGES[platform];
 if (pkg) {
   try {
     binary = require.resolve(`${pkg}/bin/${binName}`);

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `agt skill` 명령의 `--agent codex` 설치·조회·제거·업데이트 지원
+- 원격 저장소의 프로필을 바로 설치하는 `--from <repo> --profile <name>` 조합
+
+### Fixed
+- Linux ARM64 npm 선택 패키지가 설치되어도 wrapper가 바이너리를 찾지 못하던 문제
+
 ### Changed
 - **BREAKING**: Repository rebranded from `jiunbae/agent-skills` to `open330/agt`
 - **BREAKING**: CLI tools unified into single `agt` command

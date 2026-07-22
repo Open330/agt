@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 fn is_static_index_installed() -> bool {
     let local = config::local_skill_target();
     let global = config::global_skill_target();
+    let codex_local = config::local_codex_skill_target();
+    let codex_global = config::global_codex_skill_target();
 
     // Check grouped layout: context/static-index
     let local_grouped = local.join("context").join("static-index");
@@ -17,6 +19,8 @@ fn is_static_index_installed() -> bool {
     // Check flat layout: static-index
     let local_flat = local.join("static-index");
     let global_flat = global.join("static-index");
+    let codex_local_flat = codex_local.join("static-index");
+    let codex_global_flat = codex_global.join("static-index");
 
     local_grouped.exists()
         || local_grouped.is_symlink()
@@ -26,6 +30,10 @@ fn is_static_index_installed() -> bool {
         || local_flat.is_symlink()
         || global_flat.exists()
         || global_flat.is_symlink()
+        || codex_local_flat.exists()
+        || codex_local_flat.is_symlink()
+        || codex_global_flat.exists()
+        || codex_global_flat.is_symlink()
 }
 
 /// Refresh the static-index after persona changes
@@ -1153,4 +1161,3 @@ fn default_persona_template(name: &str) -> String {
         name, name
     )
 }
-

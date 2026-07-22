@@ -2,15 +2,10 @@ const { execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const https = require("https");
-
-const PLATFORM_MAP = {
-  "darwin-arm64": "aarch64-apple-darwin",
-  "linux-x64": "x86_64-unknown-linux-musl",
-  "linux-arm64": "aarch64-unknown-linux-musl",
-};
+const { PLATFORM_PACKAGES, RUST_TARGETS } = require("../lib/platforms");
 
 const platform = `${process.platform}-${process.arch}`;
-const rustTarget = PLATFORM_MAP[platform];
+const rustTarget = RUST_TARGETS[platform];
 
 if (!rustTarget) {
   console.warn(`[agt] Unsupported platform: ${platform}`);
@@ -23,7 +18,7 @@ const binPath = path.join(binDir, "agt");
 
 try {
   // Try resolving from optional dependency
-  const pkg = `@open330/agt-${platform}`;
+  const pkg = PLATFORM_PACKAGES[platform];
   require.resolve(`${pkg}/bin/agt`);
   // Binary available via optional dep, nothing to do
   process.exit(0);

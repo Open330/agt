@@ -181,6 +181,7 @@ _agt_persona_install() {{
         '1:persona name:_agt_persona_names' \
         '-g[Install globally]' \
         '--global[Install globally]' \
+        '--agent=[Target agent]:agent:(claude codex)' \
         '-f[Force overwrite]' \
         '--force[Force overwrite]' \
         '-a[Install all]' \
@@ -269,11 +270,14 @@ _agt_skill_uninstall() {{
     _arguments \
         '1:skill name:_agt_skill_names' \
         '-g[Global scope]' \
-        '--global[Global scope]'
+        '--global[Global scope]' \
+        '--agent=[Target agent]:agent:(claude codex)'
 }}
 
 _agt_skill_which() {{
-    _arguments '1:skill name:_agt_skill_names'
+    _arguments \
+        '1:skill name:_agt_skill_names' \
+        '--agent=[Target agent]:agent:(claude codex)'
 }}
 
 _agt_skill_update() {{
@@ -282,7 +286,8 @@ _agt_skill_update() {{
         '-g[Global only]' \
         '--global[Global only]' \
         '-l[Local only]' \
-        '--local[Local only]'
+        '--local[Local only]' \
+        '--agent=[Target agent]:agent:(claude codex)'
 }}
 "#);
 }
@@ -439,8 +444,10 @@ fn complete_names(kind: &str) {
 
             // Local
             collect_names_from_dir(&config::local_skill_target(), &mut names);
+            collect_names_from_dir(&config::local_codex_skill_target(), &mut names);
             // Global
             collect_names_from_dir(&config::global_skill_target(), &mut names);
+            collect_names_from_dir(&config::global_codex_skill_target(), &mut names);
             // Library
             if let Some(source_dir) = config::find_source_dir() {
                 for group in config::skill_groups(&source_dir) {

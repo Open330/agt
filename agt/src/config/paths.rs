@@ -1,5 +1,22 @@
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
+pub enum SkillAgent {
+    #[default]
+    Claude,
+    Codex,
+}
+
+impl fmt::Display for SkillAgent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Claude => write!(f, "claude"),
+            Self::Codex => write!(f, "codex"),
+        }
+    }
+}
 
 const EXCLUDE_DIRS: &[&str] = &[
     "static",
@@ -184,6 +201,41 @@ pub fn global_skill_target() -> PathBuf {
         .join(".claude/skills")
 }
 
+pub fn local_codex_skill_target() -> PathBuf {
+    git_root()
+        .map(|r| r.join(".agents/skills"))
+        .unwrap_or_else(|| PathBuf::from(".agents/skills"))
+}
+
+pub fn global_codex_skill_target() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("~"))
+        .join(".agents/skills")
+}
+
+pub fn skill_target(global: bool, agent: SkillAgent) -> PathBuf {
+    match (global, agent) {
+        (false, SkillAgent::Claude) => local_skill_target(),
+        (true, SkillAgent::Claude) => global_skill_target(),
+        (false, SkillAgent::Codex) => local_codex_skill_target(),
+        (true, SkillAgent::Codex) => global_codex_skill_target(),
+    }
+}
+
+/// Claude supports grouped skill directories. Codex discovers direct children
+/// of `.agents/skills`, so Codex destinations must remain flat.
+pub fn skill_destination(
+    target_dir: &Path,
+    group: &str,
+    skill_name: &str,
+    agent: SkillAgent,
+) -> PathBuf {
+    match agent {
+        SkillAgent::Claude if !group.is_empty() => target_dir.join(group).join(skill_name),
+        _ => target_dir.join(skill_name),
+    }
+}
+
 /// Persona paths
 pub fn persona_library(source_dir: &Path) -> PathBuf {
     source_dir.join("personas")
@@ -212,4 +264,35 @@ pub fn claude_settings_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("~"))
         .join(".claude/settings.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_destination_preserves_group() {
+        assert_eq!(
+            skill_destination(
+                Path::new("/tmp/skills"),
+                "development",
+                "git-commit-pr",
+                SkillAgent::Claude,
+            ),
+            PathBuf::from("/tmp/skills/development/git-commit-pr")
+        );
+    }
+
+    #[test]
+    fn codex_destination_is_flat() {
+        assert_eq!(
+            skill_destination(
+                Path::new("/tmp/skills"),
+                "development",
+                "git-commit-pr",
+                SkillAgent::Codex,
+            ),
+            PathBuf::from("/tmp/skills/git-commit-pr")
+        );
+    }
 }

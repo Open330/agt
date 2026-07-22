@@ -45,13 +45,18 @@ pub fn execute(prompt: &str, skill: Option<&str>, llm_name: Option<&str>) -> Res
 
 fn load_skill(name: &str) -> Result<String> {
     util::validate_name(name)?;
-    let local = config::local_skill_target().join(name);
-    let global = config::global_skill_target().join(name);
+    let installed_targets = [
+        config::local_skill_target(),
+        config::local_codex_skill_target(),
+        config::global_skill_target(),
+        config::global_codex_skill_target(),
+    ];
 
-    let skill_dir = if local.exists() {
-        local
-    } else if global.exists() {
-        global
+    let skill_dir = if let Some(installed) = installed_targets
+        .iter()
+        .find_map(|target| find_installed_skill(target, name))
+    {
+        installed
     } else if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
         find_skill_in_source(&source_dir, name)
             .context(format!("Skill '{}' not found", name))?
@@ -71,7 +76,12 @@ fn auto_match_skills(prompt: &str) -> Option<String> {
     let mut seen = HashSet::new();
 
     // Scan installed skills (local then global, with subgroups)
-    for dir in &[config::local_skill_target(), config::global_skill_target()] {
+    for dir in &[
+        config::local_skill_target(),
+        config::local_codex_skill_target(),
+        config::global_skill_target(),
+        config::global_codex_skill_target(),
+    ] {
         collect_scored_skills(dir, &prompt_lower, &mut scored, &mut seen);
     }
 
@@ -197,6 +207,22 @@ fn find_skill_in_source(source_dir: &Path, name: &str) -> Option<std::path::Path
         let path = source_dir.join(&group).join(name);
         if path.is_dir() && path.join("SKILL.md").exists() {
             return Some(path);
+        }
+    }
+    None
+}
+
+fn find_installed_skill(target_dir: &Path, name: &str) -> Option<std::path::PathBuf> {
+    let direct = target_dir.join(name);
+    if direct.join("SKILL.md").exists() {
+        return Some(direct);
+    }
+
+    let entries = fs::read_dir(target_dir).ok()?;
+    for entry in entries.flatten() {
+        let candidate = entry.path().join(name);
+        if candidate.join("SKILL.md").exists() {
+            return Some(candidate);
         }
     }
     None

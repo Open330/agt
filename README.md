@@ -36,14 +36,18 @@ A collection of **skills**, **personas**, and **hooks** for AI coding agents (Cl
 ```prompt
 Install the agent-skills toolkit into this project:
 
-1. Install the "core" profile (essential skills for every workspace):
-   npx @open330/agt skill install --profile core
+1. Install the "core" profile for Claude Code:
+   npx @open330/agt skill install --profile core --from jiunbae/agent-skills
 
-2. Install all available personas globally:
+2. Install the same profile for Codex:
+   npx @open330/agt skill install --profile core --from jiunbae/agent-skills --agent codex
+
+3. Install all available personas globally:
    npx @open330/agt persona install --global --from jiunbae/agent-skills
 
-3. Verify installation:
+4. Verify installation:
    npx @open330/agt skill list
+   npx @open330/agt skill list --agent codex
    npx @open330/agt persona list
 
 Note: Use `npm install -g @open330/agt` first if you prefer running `agt` directly.
@@ -58,7 +62,8 @@ Note: Use `npm install -g @open330/agt` first if you prefer running `agt` direct
 ### With npx (No Install)
 
 ```bash
-npx @open330/agt skill install --profile core          # Install core skills
+npx @open330/agt skill install --profile core --from jiunbae/agent-skills
+npx @open330/agt skill install --profile core --from jiunbae/agent-skills --agent codex
 npx @open330/agt skill install -g --from jiunbae/agent-skills  # Browse & install from repo
 npx @open330/agt persona install -g --from jiunbae/agent-skills
 ```
@@ -67,11 +72,18 @@ npx @open330/agt persona install -g --from jiunbae/agent-skills
 
 ```bash
 npm install -g @open330/agt
-agt skill install --profile core
-agt skill install -g git-commit-pr     # Install a skill globally
-agt persona install -g --all           # Install all personas globally
+agt skill install --profile core --from jiunbae/agent-skills
+agt skill install --profile core --from jiunbae/agent-skills --agent codex
+agt skill install -g --from jiunbae/agent-skills/development/git-commit-pr
+agt persona install -g --from jiunbae/agent-skills
 agt skill update                       # Update all remote-installed skills
+agt skill update --agent codex         # Update Codex-installed skills
 ```
+
+`--agent claude` is the default and installs grouped skills under
+`.claude/skills`. `--agent codex` installs flat skill directories under
+`.agents/skills`, matching Codex discovery rules. Add `--global` to use the
+corresponding user-level directory instead of the current project.
 
 ### With install.sh
 

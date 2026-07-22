@@ -13,9 +13,12 @@ pub enum SkillAction {
     Install {
         /// Skill name (from source library)
         name: Option<String>,
-        /// Install globally (~/.claude/skills)
+        /// Install globally in the selected agent's user skill directory
         #[arg(short, long)]
         global: bool,
+        /// Agent whose skill directory should receive the installation
+        #[arg(long, value_enum, default_value_t)]
+        agent: config::SkillAgent,
         /// Force overwrite existing
         #[arg(short, long)]
         force: bool,
@@ -36,6 +39,9 @@ pub enum SkillAction {
         /// Remove from global scope
         #[arg(short, long)]
         global: bool,
+        /// Agent whose skill directory should be modified
+        #[arg(long, value_enum, default_value_t)]
+        agent: config::SkillAgent,
     },
     /// List available and installed skills
     List {
@@ -51,16 +57,26 @@ pub enum SkillAction {
         /// Show available installation profiles
         #[arg(long)]
         profiles: bool,
+        /// Agent whose installed skills should be listed
+        #[arg(long, value_enum, default_value_t)]
+        agent: config::SkillAgent,
         /// Output as JSON
         #[arg(long)]
         json: bool,
     },
     /// Initialize skill directory in current project
-    Init,
+    Init {
+        /// Agent whose project skill directory should be created
+        #[arg(long, value_enum, default_value_t)]
+        agent: config::SkillAgent,
+    },
     /// Show the path of a skill
     Which {
         /// Skill name
         name: String,
+        /// Agent whose installed skills should be searched
+        #[arg(long, value_enum, default_value_t)]
+        agent: config::SkillAgent,
     },
     /// Update remote-installed skills
     Update {
@@ -72,6 +88,9 @@ pub enum SkillAction {
         /// Update only local skills
         #[arg(short, long)]
         local: bool,
+        /// Agent whose remote-installed skills should be updated
+        #[arg(long, value_enum, default_value_t)]
+        agent: config::SkillAgent,
     },
     /// Run a prompt with an optional skill (omit skill to call LLM directly)
     #[command(alias = "run")]
@@ -92,26 +111,33 @@ pub fn execute(action: SkillAction) -> Result<()> {
         SkillAction::Install {
             name,
             global,
+            agent,
             force,
             profile,
             all,
             from,
-        } => install(name, global, force, profile, all, from),
-        SkillAction::Uninstall { name, global } => uninstall(&name, global),
+        } => install(name, global, agent, force, profile, all, from),
+        SkillAction::Uninstall {
+            name,
+            global,
+            agent,
+        } => uninstall(&name, global, agent),
         SkillAction::List {
             installed,
             local,
             global,
             profiles,
+            agent,
             json,
-        } => list(installed, local, global, profiles, json),
-        SkillAction::Init => init(),
-        SkillAction::Which { name } => which(&name),
+        } => list(installed, local, global, profiles, agent, json),
+        SkillAction::Init { agent } => init(agent),
+        SkillAction::Which { name, agent } => which(&name, agent),
         SkillAction::Update {
             name,
             global,
             local,
-        } => update(name, global, local),
+            agent,
+        } => update(name, global, local, agent),
         SkillAction::Use { skill, llm, prompt } => {
             let prompt_str = prompt.join(" ");
             if prompt_str.trim().is_empty() {
@@ -125,18 +151,12 @@ pub fn execute(action: SkillAction) -> Result<()> {
 fn install(
     name: Option<String>,
     global: bool,
+    agent: config::SkillAgent,
     force: bool,
     profile: Option<String>,
     all: bool,
     from: Option<String>,
 ) -> Result<()> {
-    if let Some(spec_str) = from {
-        if profile.is_some() || all {
-            bail!("--from cannot be combined with --profile or --all");
-        }
-        return install_remote(&spec_str, global, force);
-    }
-
     // Profile / all install
     let profile_name = if all {
         if profile.is_some() {
@@ -147,11 +167,21 @@ fn install(
         profile
     };
 
+    if let Some(spec_str) = from {
+        return install_remote(
+            &spec_str,
+            global,
+            agent,
+            force,
+            profile_name.as_deref(),
+        );
+    }
+
     if let Some(prof_name) = profile_name {
         if name.is_some() {
             bail!("Cannot specify both a skill name and --profile/--all");
         }
-        return install_profile(&prof_name, global, force);
+        return install_profile(&prof_name, global, agent, force);
     }
 
     let name = match name {
@@ -160,7 +190,7 @@ fn install(
             if !console::Term::stderr().is_term() {
                 bail!("Skill name required (or use --profile, --all, --from)");
             }
-            return interactive_install(global, force);
+            return interactive_install(global, agent, force);
         }
     };
     util::validate_name(&name)?;
@@ -180,29 +210,21 @@ fn install(
         .map(|g| g.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let target_dir = if global {
-        config::global_skill_target()
-    } else {
-        config::local_skill_target()
-    };
+    let target_dir = config::skill_target(global, agent);
 
     // Check cross-scope duplicate
     if !force {
-        let local_dir = config::local_skill_target();
-        let global_dir = config::global_skill_target();
+        let local_dir = config::skill_target(false, agent);
+        let global_dir = config::skill_target(true, agent);
         if warn_cross_scope_duplicate(&name, &group, global, &local_dir, &global_dir) {
             return Ok(());
         }
     }
 
-    // Preserve group prefix: target_dir/group/skill_name
-    let group_dir = if group.is_empty() {
-        target_dir.clone()
-    } else {
-        target_dir.join(&group)
-    };
-    fs::create_dir_all(&group_dir)?;
-    let link_path = group_dir.join(&name);
+    let link_path = config::skill_destination(&target_dir, &group, &name, agent);
+    if let Some(parent) = link_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
 
     util::ensure_target_clear(&link_path, force, &name)?;
 
@@ -213,16 +235,28 @@ fn install(
     ))?;
 
     let scope = if global { "global" } else { "local" };
-    ui::success(&format!("Installed skill '{}/{}' ({})", group, name, scope));
+    ui::success(&format!(
+        "Installed skill '{}/{}' ({}, {})",
+        group, name, scope, agent
+    ));
     Ok(())
 }
 
-fn install_remote(spec_str: &str, global: bool, force: bool) -> Result<()> {
+fn install_remote(
+    spec_str: &str,
+    global: bool,
+    agent: config::SkillAgent,
+    force: bool,
+    profile: Option<&str>,
+) -> Result<()> {
     let spec = remote::parse_spec(spec_str)?;
 
     // Repo-level: owner/repo with no path — browse all skills
     if spec.path.is_empty() {
-        return install_remote_repo(&spec, global, force);
+        return install_remote_repo(&spec, global, agent, force, profile);
+    }
+    if profile.is_some() {
+        bail!("--profile/--all requires a repository-level --from spec");
     }
 
     ui::info(&format!("Downloading {}...", spec));
@@ -241,11 +275,7 @@ fn install_remote(spec_str: &str, global: bool, force: bool) -> Result<()> {
         .to_string();
     util::validate_name(&skill_name)?;
 
-    let target_dir = if global {
-        config::global_skill_target()
-    } else {
-        config::local_skill_target()
-    };
+    let target_dir = config::skill_target(global, agent);
 
     fs::create_dir_all(&target_dir)?;
     let dest = target_dir.join(&skill_name);
@@ -257,13 +287,19 @@ fn install_remote(spec_str: &str, global: bool, force: bool) -> Result<()> {
 
     let scope = if global { "global" } else { "local" };
     ui::success(&format!(
-        "Installed remote skill '{}' ({}) from {}",
-        skill_name, scope, spec
+        "Installed remote skill '{}' ({}, {}) from {}",
+        skill_name, scope, agent, spec
     ));
     Ok(())
 }
 
-fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> Result<()> {
+fn install_remote_repo(
+    spec: &remote::RemoteSpec,
+    global: bool,
+    agent: config::SkillAgent,
+    force: bool,
+    profile: Option<&str>,
+) -> Result<()> {
     ui::info(&format!("Downloading {}/{}@{}...", spec.owner, spec.repo, spec.git_ref));
     let (_tmp_dir, repo_root) = remote::fetch_dir(spec)?;
 
@@ -297,17 +333,15 @@ fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> 
     // Interactive mode if TTY
     let is_tty = console::Term::stderr().is_term();
 
-    let target_dir = if global {
-        config::global_skill_target()
-    } else {
-        config::local_skill_target()
-    };
+    let target_dir = config::skill_target(global, agent);
     fs::create_dir_all(&target_dir)?;
 
     let scope = if global { "global" } else { "local" };
-    let skills_to_install = if is_tty {
-        let local_installed = installed_skill_names(&config::local_skill_target());
-        let global_installed = installed_skill_names(&config::global_skill_target());
+    let skills_to_install = if let Some(profile_name) = profile {
+        config::resolve_profile(profile_name, &repo_root)?.skills
+    } else if is_tty {
+        let local_installed = installed_skill_names(&config::skill_target(false, agent));
+        let global_installed = installed_skill_names(&config::skill_target(true, agent));
 
         let selection = ui::interactive::run_interactive_selector_remote(
             &repo_root, &local_installed, &global_installed,
@@ -341,8 +375,8 @@ fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> 
 
     let mut installed = 0;
     let mut skipped = 0;
-    let local_dir = config::local_skill_target();
-    let global_dir = config::global_skill_target();
+    let local_dir = config::skill_target(false, agent);
+    let global_dir = config::skill_target(true, agent);
 
     for (group, skill_name) in &skills_to_install {
         let source_path = repo_root.join(group).join(skill_name);
@@ -359,10 +393,10 @@ fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> 
             continue;
         }
 
-        // Preserve group prefix: target_dir/group/skill_name
-        let group_dir = target_dir.join(group);
-        fs::create_dir_all(&group_dir)?;
-        let dest = group_dir.join(skill_name);
+        let dest = config::skill_destination(&target_dir, group, skill_name, agent);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
 
         if dest.exists() || dest.is_symlink() {
             if force {
@@ -385,7 +419,10 @@ fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> 
             git_ref: spec.git_ref.clone(),
         };
         remote::write_metadata(&dest, &skill_spec)?;
-        ui::success(&format!("Installed skill '{}/{}' ({})", group, skill_name, scope));
+        ui::success(&format!(
+            "Installed skill '{}/{}' ({}, {})",
+            group, skill_name, scope, agent
+        ));
         installed += 1;
     }
 
@@ -494,13 +531,9 @@ fn copy_file_with_strategy(source: &Path, target: &Path, strategy: &str) -> Resu
     Ok(1)
 }
 
-fn uninstall(name: &str, global: bool) -> Result<()> {
+fn uninstall(name: &str, global: bool, agent: config::SkillAgent) -> Result<()> {
     let name = name.trim_end_matches('/');
-    let target_dir = if global {
-        config::global_skill_target()
-    } else {
-        config::local_skill_target()
-    };
+    let target_dir = config::skill_target(global, agent);
     let scope = if global { "global" } else { "local" };
 
     // Check if name matches a real group directory (e.g. "acme/")
@@ -532,7 +565,10 @@ fn uninstall(name: &str, global: bool) -> Result<()> {
         }
     }
 
-    ui::success(&format!("Uninstalled skill '{}' ({})", name, scope));
+    ui::success(&format!(
+        "Uninstalled skill '{}' ({}, {})",
+        name, scope, agent
+    ));
     Ok(())
 }
 
@@ -670,31 +706,33 @@ fn find_installed_skill(target_dir: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
-fn install_profile(profile_name: &str, global: bool, force: bool) -> Result<()> {
+fn install_profile(
+    profile_name: &str,
+    global: bool,
+    agent: config::SkillAgent,
+    force: bool,
+) -> Result<()> {
     let source_dir = config::find_source_dir()
         .or_else(config::find_cwd_source_dir)
         .context(config::source_dir_hint())?;
     let resolved = config::resolve_profile(profile_name, &source_dir)?;
 
-    let target_dir = if global {
-        config::global_skill_target()
-    } else {
-        config::local_skill_target()
-    };
+    let target_dir = config::skill_target(global, agent);
     fs::create_dir_all(&target_dir)?;
 
     let scope = if global { "global" } else { "local" };
     ui::info(&format!(
-        "Installing profile '{}': {} skills ({})",
+        "Installing profile '{}': {} skills ({}, {})",
         resolved.name,
         resolved.skills.len(),
-        scope
+        scope,
+        agent
     ));
 
     let mut installed = 0;
     let mut skipped = 0;
-    let local_dir = config::local_skill_target();
-    let global_dir = config::global_skill_target();
+    let local_dir = config::skill_target(false, agent);
+    let global_dir = config::skill_target(true, agent);
 
     for (group, skill_name) in &resolved.skills {
         let skill_path = source_dir.join(group).join(skill_name);
@@ -712,10 +750,10 @@ fn install_profile(profile_name: &str, global: bool, force: bool) -> Result<()> 
             continue;
         }
 
-        // Preserve group prefix: target_dir/group/skill_name
-        let group_dir = target_dir.join(group);
-        fs::create_dir_all(&group_dir)?;
-        let link_path = group_dir.join(skill_name);
+        let link_path = config::skill_destination(&target_dir, group, skill_name, agent);
+        if let Some(parent) = link_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
 
         if link_path.exists() || link_path.is_symlink() {
             if force {
@@ -750,10 +788,10 @@ fn install_profile(profile_name: &str, global: bool, force: bool) -> Result<()> 
     Ok(())
 }
 
-fn interactive_install(global: bool, force: bool) -> Result<()> {
+fn interactive_install(global: bool, agent: config::SkillAgent, force: bool) -> Result<()> {
     let source_dir = config::find_source_dir();
-    let local_installed = installed_skill_names(&config::local_skill_target());
-    let global_installed = installed_skill_names(&config::global_skill_target());
+    let local_installed = installed_skill_names(&config::skill_target(false, agent));
+    let global_installed = installed_skill_names(&config::skill_target(true, agent));
 
     let selection = if let Some(ref sd) = source_dir {
         ui::interactive::run_interactive_selector(sd, &local_installed, &global_installed)?
@@ -770,7 +808,7 @@ fn interactive_install(global: bool, force: bool) -> Result<()> {
                 ui::info("Installation cancelled.");
                 return Ok(());
             }
-            install_profile(&prof_name, global, force)
+            install_profile(&prof_name, global, agent, force)
         }
         ui::interactive::InteractiveSelection::Skills(skills) => {
             let sd = source_dir.context(config::source_dir_hint())?;
@@ -778,16 +816,16 @@ fn interactive_install(global: bool, force: bool) -> Result<()> {
                 ui::info("Installation cancelled.");
                 return Ok(());
             }
-            install_selected_skills(&sd, &skills, global, force)
+            install_selected_skills(&sd, &skills, global, agent, force)
         }
         ui::interactive::InteractiveSelection::Remote(spec) => {
-            install_remote(&spec, global, force)
+            install_remote(&spec, global, agent, force, None)
         }
         ui::interactive::InteractiveSelection::CloneAndInstall => {
-            clone_and_install(global, force)
+            clone_and_install(global, agent, force)
         }
         ui::interactive::InteractiveSelection::LocalRepo(path) => {
-            local_repo_install(&path, global, force)
+            local_repo_install(&path, global, agent, force)
         }
         ui::interactive::InteractiveSelection::Cancelled => {
             ui::info("Installation cancelled.");
@@ -796,7 +834,7 @@ fn interactive_install(global: bool, force: bool) -> Result<()> {
     }
 }
 
-fn clone_and_install(global: bool, force: bool) -> Result<()> {
+fn clone_and_install(global: bool, agent: config::SkillAgent, force: bool) -> Result<()> {
     let home = dirs::home_dir().context("Cannot determine home directory")?;
     let target = home.join(".agent-skills");
 
@@ -818,8 +856,8 @@ fn clone_and_install(global: bool, force: bool) -> Result<()> {
     // Now run interactive install with the fresh source
     ui::info("Launching interactive installer...");
     eprintln!();
-    let local_installed = installed_skill_names(&config::local_skill_target());
-    let global_installed = installed_skill_names(&config::global_skill_target());
+    let local_installed = installed_skill_names(&config::skill_target(false, agent));
+    let global_installed = installed_skill_names(&config::skill_target(true, agent));
 
     let selection =
         ui::interactive::run_interactive_selector(&target, &local_installed, &global_installed)?;
@@ -831,17 +869,17 @@ fn clone_and_install(global: bool, force: bool) -> Result<()> {
                 ui::info("Installation cancelled.");
                 return Ok(());
             }
-            install_profile(&prof_name, global, force)
+            install_profile(&prof_name, global, agent, force)
         }
         ui::interactive::InteractiveSelection::Skills(skills) => {
             if !ui::interactive::confirm_install(&skills, global)? {
                 ui::info("Installation cancelled.");
                 return Ok(());
             }
-            install_selected_skills(&target, &skills, global, force)
+            install_selected_skills(&target, &skills, global, agent, force)
         }
         ui::interactive::InteractiveSelection::Remote(spec) => {
-            install_remote(&spec, global, force)
+            install_remote(&spec, global, agent, force, None)
         }
         _ => {
             ui::info("Installation cancelled.");
@@ -850,14 +888,19 @@ fn clone_and_install(global: bool, force: bool) -> Result<()> {
     }
 }
 
-fn local_repo_install(source_dir: &Path, global: bool, force: bool) -> Result<()> {
+fn local_repo_install(
+    source_dir: &Path,
+    global: bool,
+    agent: config::SkillAgent,
+    force: bool,
+) -> Result<()> {
     ui::info(&format!(
         "Using local skills source: {}",
         source_dir.display()
     ));
     eprintln!();
-    let local_installed = installed_skill_names(&config::local_skill_target());
-    let global_installed = installed_skill_names(&config::global_skill_target());
+    let local_installed = installed_skill_names(&config::skill_target(false, agent));
+    let global_installed = installed_skill_names(&config::skill_target(true, agent));
 
     let selection =
         ui::interactive::run_interactive_selector(source_dir, &local_installed, &global_installed)?;
@@ -869,17 +912,17 @@ fn local_repo_install(source_dir: &Path, global: bool, force: bool) -> Result<()
                 ui::info("Installation cancelled.");
                 return Ok(());
             }
-            install_profile(&prof_name, global, force)
+            install_profile(&prof_name, global, agent, force)
         }
         ui::interactive::InteractiveSelection::Skills(skills) => {
             if !ui::interactive::confirm_install(&skills, global)? {
                 ui::info("Installation cancelled.");
                 return Ok(());
             }
-            install_selected_skills(source_dir, &skills, global, force)
+            install_selected_skills(source_dir, &skills, global, agent, force)
         }
         ui::interactive::InteractiveSelection::Remote(spec) => {
-            install_remote(&spec, global, force)
+            install_remote(&spec, global, agent, force, None)
         }
         _ => {
             ui::info("Installation cancelled.");
@@ -892,18 +935,15 @@ fn install_selected_skills(
     source_dir: &Path,
     skills: &[(String, String)],
     global: bool,
+    agent: config::SkillAgent,
     force: bool,
 ) -> Result<()> {
-    let target_dir = if global {
-        config::global_skill_target()
-    } else {
-        config::local_skill_target()
-    };
+    let target_dir = config::skill_target(global, agent);
     fs::create_dir_all(&target_dir)?;
 
     let scope = if global { "global" } else { "local" };
-    let local_dir = config::local_skill_target();
-    let global_dir = config::global_skill_target();
+    let local_dir = config::skill_target(false, agent);
+    let global_dir = config::skill_target(true, agent);
     let mut installed = 0;
     let mut skipped = 0;
 
@@ -923,10 +963,10 @@ fn install_selected_skills(
             continue;
         }
 
-        // Preserve group prefix: target_dir/group/skill_name
-        let group_dir = target_dir.join(group);
-        fs::create_dir_all(&group_dir)?;
-        let link_path = group_dir.join(skill_name);
+        let link_path = config::skill_destination(&target_dir, group, skill_name, agent);
+        if let Some(parent) = link_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
 
         if link_path.exists() || link_path.is_symlink() {
             if force {
@@ -945,7 +985,10 @@ fn install_selected_skills(
             "Failed to create symlink for '{}/{}'",
             group, skill_name
         ))?;
-        ui::success(&format!("Installed skill '{}/{}' ({})", group, skill_name, scope));
+        ui::success(&format!(
+            "Installed skill '{}/{}' ({}, {})",
+            group, skill_name, scope, agent
+        ));
         installed += 1;
     }
 
@@ -953,13 +996,20 @@ fn install_selected_skills(
     Ok(())
 }
 
-fn list(installed: bool, local: bool, global: bool, profiles: bool, json: bool) -> Result<()> {
+fn list(
+    installed: bool,
+    local: bool,
+    global: bool,
+    profiles: bool,
+    agent: config::SkillAgent,
+    json: bool,
+) -> Result<()> {
     if profiles {
         return list_profiles_display(json);
     }
     // Build installed skill sets for status lookup
-    let local_dir = config::local_skill_target();
-    let global_dir = config::global_skill_target();
+    let local_dir = config::skill_target(false, agent);
+    let global_dir = config::skill_target(true, agent);
     let local_installed = installed_skill_names(&local_dir);
     let global_installed = installed_skill_names(&global_dir);
 
@@ -1082,8 +1132,8 @@ fn list(installed: bool, local: bool, global: bool, profiles: bool, json: bool) 
     Ok(())
 }
 
-fn init() -> Result<()> {
-    let dir = config::local_skill_target();
+fn init(agent: config::SkillAgent) -> Result<()> {
+    let dir = config::skill_target(false, agent);
     if dir.exists() {
         ui::info(&format!("Skill directory already exists: {}", dir.display()));
         return Ok(());
@@ -1093,9 +1143,9 @@ fn init() -> Result<()> {
     Ok(())
 }
 
-fn which(name: &str) -> Result<()> {
+fn which(name: &str, agent: config::SkillAgent) -> Result<()> {
     // Check local (grouped then flat)
-    let local_dir = config::local_skill_target();
+    let local_dir = config::skill_target(false, agent);
     if let Some(found) = find_installed_skill(&local_dir, name) {
         let resolved = fs::canonicalize(&found).unwrap_or(found);
         println!("{}", resolved.display());
@@ -1103,7 +1153,7 @@ fn which(name: &str) -> Result<()> {
     }
 
     // Check global (grouped then flat)
-    let global_dir = config::global_skill_target();
+    let global_dir = config::skill_target(true, agent);
     if let Some(found) = find_installed_skill(&global_dir, name) {
         let resolved = fs::canonicalize(&found).unwrap_or(found);
         println!("{}", resolved.display());
@@ -1121,14 +1171,19 @@ fn which(name: &str) -> Result<()> {
     bail!("Skill '{}' not found", name);
 }
 
-fn update(name: Option<String>, only_global: bool, only_local: bool) -> Result<()> {
+fn update(
+    name: Option<String>,
+    only_global: bool,
+    only_local: bool,
+    agent: config::SkillAgent,
+) -> Result<()> {
     let mut targets: Vec<(&str, PathBuf)> = Vec::new();
 
     if !only_global {
-        targets.push(("local", config::local_skill_target()));
+        targets.push(("local", config::skill_target(false, agent)));
     }
     if !only_local {
-        targets.push(("global", config::global_skill_target()));
+        targets.push(("global", config::skill_target(true, agent)));
     }
 
     let mut total_updated = 0usize;

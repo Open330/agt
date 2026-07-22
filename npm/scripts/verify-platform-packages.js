@@ -1,6 +1,7 @@
 const { execFileSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const { PLATFORM_PACKAGES } = require("../lib/platforms");
 
 const rootPackage = JSON.parse(
   fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")
@@ -37,6 +38,22 @@ function main() {
   const optionalDependencies = rootPackage.optionalDependencies || {};
   const localVersions = readLocalPlatformVersions();
   const failures = [];
+
+  for (const [platform, name] of Object.entries(PLATFORM_PACKAGES)) {
+    if (!Object.hasOwn(optionalDependencies, name)) {
+      failures.push(
+        `Wrapper platform ${platform} maps to ${name}, but it is missing from optionalDependencies.`
+      );
+    }
+  }
+
+  for (const name of Object.keys(optionalDependencies)) {
+    if (!Object.values(PLATFORM_PACKAGES).includes(name)) {
+      failures.push(
+        `optionalDependency ${name} is not reachable from the wrapper platform map.`
+      );
+    }
+  }
 
   for (const [name, version] of Object.entries(optionalDependencies)) {
     const localVersion = localVersions.get(name);

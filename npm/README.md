@@ -35,14 +35,18 @@ A collection of **skills**, **personas**, and **hooks** for AI coding agents (Cl
 # Install agt globally
 npm install -g @open330/agt
 
-# Install the core profile (essential skills for every workspace)
-agt skill install --profile core
+# Install the core profile for Claude Code
+agt skill install --profile core --from jiunbae/agent-skills
+
+# Install the core profile for Codex
+agt skill install --profile core --from jiunbae/agent-skills --agent codex
 
 # Install all available personas globally
 agt persona install --global --from jiunbae/agent-skills
 
 # Verify installation
 agt skill list
+agt skill list --agent codex
 agt persona list
 ```
 
@@ -53,7 +57,8 @@ agt persona list
 ### With npx (No Install)
 
 ```bash
-npx @open330/agt skill install --profile core          # Install core skills
+npx @open330/agt skill install --profile core --from jiunbae/agent-skills
+npx @open330/agt skill install --profile core --from jiunbae/agent-skills --agent codex
 npx @open330/agt skill install -g --from jiunbae/agent-skills  # Browse & install from repo
 npx @open330/agt persona install -g --from jiunbae/agent-skills
 ```
@@ -62,11 +67,18 @@ npx @open330/agt persona install -g --from jiunbae/agent-skills
 
 ```bash
 npm install -g @open330/agt
-agt skill install --profile core
-agt skill install -g git-commit-pr     # Install a skill globally
-agt persona install -g --all           # Install all personas globally
+agt skill install --profile core --from jiunbae/agent-skills
+agt skill install --profile core --from jiunbae/agent-skills --agent codex
+agt skill install -g --from jiunbae/agent-skills/development/git-commit-pr
+agt persona install -g --from jiunbae/agent-skills
 agt skill update                       # Update all remote-installed skills
+agt skill update --agent codex         # Update Codex-installed skills
 ```
+
+`--agent claude` is the default and installs grouped skills under
+`.claude/skills`. `--agent codex` installs flat skill directories under
+`.agents/skills`, matching Codex discovery rules. Add `--global` to use the
+corresponding user-level directory instead of the current project.
 
 ### With install.sh
 
