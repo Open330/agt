@@ -5,6 +5,7 @@ use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::path::Component;
 use std::path::{Path, PathBuf};
 
 #[derive(Subcommand)]
@@ -233,11 +234,7 @@ fn show(name: &str) -> Result<()> {
         }
         HookType::Prompt | HookType::Agent => {
             if let Some(ref prompt) = def.prompt {
-                let display = if prompt.len() > 80 {
-                    format!("{}...", &prompt[..80])
-                } else {
-                    prompt.clone()
-                };
+                let display = prompt_preview(prompt);
                 ui::table::add_row(&mut table, &["Prompt", &display]);
             }
             if let Some(ref model) = def.model {
@@ -269,33 +266,14 @@ fn install(name: Option<String>, force: bool) -> Result<()> {
         None => registry.iter().collect(),
     };
 
-    // Install command hook scripts to ~/.claude/hooks/
-    let hooks_target = config::global_hook_target();
-    fs::create_dir_all(&hooks_target)
-        .with_context(|| format!("Cannot create {}", hooks_target.display()))?;
+    // Resolve every command source before creating the target directory or
+    // changing files. Keep the canonical path so a later lookup cannot follow
+    // a changed source symlink outside the hooks directory.
+    let command_sources = validate_command_sources(&to_install, &hooks_source)?;
 
-    for (hook_name, def) in &to_install {
-        if let HookType::Command = def.hook_type {
-            if let Some(ref script) = def.script {
-                let src = hooks_source.join(script);
-                let dst = hooks_target.join(script);
-                if !src.exists() {
-                    ui::warn(&format!("Script not found: {}", src.display()));
-                    continue;
-                }
-                if dst.exists() {
-                    if !force {
-                        ui::warn(&format!("Already exists (use -f to overwrite): {}", script));
-                        continue;
-                    }
-                    fs::remove_file(&dst)?;
-                }
-                #[cfg(unix)]
-                std::os::unix::fs::symlink(&src, &dst)?;
-                ui::success(&format!("Linked: {} ({})", hook_name, script));
-            }
-        }
-    }
+    // Install command hook scripts to ~/.claude/hooks/.
+    let hooks_target = config::global_hook_target();
+    install_command_scripts(&command_sources, &hooks_target, force)?;
 
     // Merge hook config into settings.json
     let settings_path = config::claude_settings_path();
@@ -327,16 +305,10 @@ fn uninstall(name: Option<String>) -> Result<()> {
         None => registry.iter().collect(),
     };
 
-    // Remove script symlinks
-    for (_hook_name, def) in &to_remove {
-        if let Some(ref script) = def.script {
-            let dst = hooks_target.join(script);
-            if dst.exists() {
-                fs::remove_file(&dst)?;
-                ui::success(&format!("Removed script: {}", script));
-            }
-        }
-    }
+    // Destination validation is independent of the original source, so stale
+    // installed links remain removable after their source disappears.
+    let command_scripts = validate_command_script_names(&to_remove)?;
+    uninstall_command_scripts(&command_scripts, &hooks_target)?;
 
     // Remove from settings.json
     let settings_path = config::claude_settings_path();
@@ -399,7 +371,7 @@ fn test_hook(name: &str, payload: Option<String>) -> Result<()> {
                 .and_then(|mut child| {
                     use std::io::Write;
                     if let Some(ref mut stdin) = child.stdin {
-                        let _ = stdin.write_all(test_payload.as_bytes());
+                        stdin.write_all(test_payload.as_bytes())?;
                     }
                     child.wait_with_output()
                 })?;
@@ -420,39 +392,37 @@ fn test_hook(name: &str, payload: Option<String>) -> Result<()> {
                     eprintln!("    {}", line.yellow());
                 }
             }
+            ensure_command_success(name, &output.status)?;
         }
         HookType::Http => {
             let url = def.url.as_ref().with_context(|| "HTTP hook has no URL")?;
             ui::info(&format!("POST {}", url));
-            match ureq::post(url)
+            let resp = ureq::post(url)
                 .set("Content-Type", "application/json")
                 .timeout(std::time::Duration::from_secs(
-                    def.timeout.unwrap_or(30) as u64,
+                    def.timeout.unwrap_or(30) as u64
                 ))
                 .send_string(&test_payload)
-            {
-                Ok(resp) => {
-                    let status = resp.status();
-                    let body = resp.into_string().unwrap_or_default();
-                    eprintln!();
-                    eprintln!("  {} {}", "Status:".bold(), status);
-                    if !body.is_empty() {
-                        eprintln!("  {}", "Response:".bold());
-                        // Try to pretty-print JSON
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-                            eprintln!(
-                                "    {}",
-                                serde_json::to_string_pretty(&json)
-                                    .unwrap_or(body)
-                                    .replace('\n', "\n    ")
-                            );
-                        } else {
-                            eprintln!("    {}", body);
-                        }
-                    }
-                }
-                Err(e) => {
-                    ui::error(&format!("Request failed: {}", e));
+                .with_context(|| format!("Hook '{}' HTTP request failed", name))?;
+            let status = resp.status();
+            ensure_http_success(name, status)?;
+            let body = resp
+                .into_string()
+                .with_context(|| format!("Cannot read hook '{}' HTTP response", name))?;
+            eprintln!();
+            eprintln!("  {} {}", "Status:".bold(), status);
+            if !body.is_empty() {
+                eprintln!("  {}", "Response:".bold());
+                // Try to pretty-print JSON
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                    eprintln!(
+                        "    {}",
+                        serde_json::to_string_pretty(&json)
+                            .unwrap_or(body)
+                            .replace('\n', "\n    ")
+                    );
+                } else {
+                    eprintln!("    {}", body);
                 }
             }
         }
@@ -563,8 +533,303 @@ fn load_registry() -> Result<HookRegistry> {
         .with_context(|| format!("Cannot read {}", registry_path.display()))?;
     let registry: HookRegistry = serde_json::from_str(&content)
         .with_context(|| format!("Invalid hooks.json: {}", registry_path.display()))?;
+    validate_registry_payloads(&registry, &registry_path)?;
 
     Ok(registry)
+}
+
+fn validate_registry_payloads(registry: &HookRegistry, registry_path: &Path) -> Result<()> {
+    for (name, def) in registry {
+        let (kind, field, value) = match def.hook_type {
+            HookType::Command => ("command", "script", def.script.as_deref()),
+            HookType::Http => ("http", "url", def.url.as_deref()),
+            HookType::Prompt => ("prompt", "prompt", def.prompt.as_deref()),
+            HookType::Agent => ("agent", "prompt", def.prompt.as_deref()),
+        };
+        if value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            bail!(
+                "Invalid hook '{}' in {}: {} hook requires a non-empty '{}' field",
+                name,
+                registry_path.display(),
+                kind,
+                field
+            );
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct CommandScript {
+    hook_name: String,
+    script: String,
+}
+
+#[derive(Debug)]
+struct CommandSource {
+    command: CommandScript,
+    canonical_source: PathBuf,
+}
+
+fn validate_command_script_names(hooks: &[(&String, &HookDef)]) -> Result<Vec<CommandScript>> {
+    let mut scripts = BTreeMap::new();
+    for (name, def) in hooks {
+        if let HookType::Command = def.hook_type {
+            let script = def
+                .script
+                .as_deref()
+                .with_context(|| format!("Invalid command hook '{}': missing script", name))?;
+            validate_command_script_name(name, script)?;
+            scripts
+                .entry(script.to_string())
+                .or_insert_with(|| CommandScript {
+                    hook_name: (*name).clone(),
+                    script: script.to_string(),
+                });
+        }
+    }
+    Ok(scripts.into_values().collect())
+}
+
+fn validate_command_sources(
+    hooks: &[(&String, &HookDef)],
+    hooks_source: &Path,
+) -> Result<Vec<CommandSource>> {
+    validate_command_script_names(hooks)?
+        .into_iter()
+        .map(|command| {
+            let canonical_source =
+                validate_command_source(&command.hook_name, &command.script, hooks_source)?;
+            Ok(CommandSource {
+                command,
+                canonical_source,
+            })
+        })
+        .collect()
+}
+
+fn validate_command_script_name(name: &str, script: &str) -> Result<()> {
+    let script_path = Path::new(script);
+    let mut components = script_path.components();
+    let is_single_normal = matches!(components.next(), Some(Component::Normal(_)))
+        && components.next().is_none()
+        && !script.trim().is_empty();
+    if !is_single_normal {
+        bail!(
+            "Invalid command hook '{}' script path '{}': expected one non-empty file name",
+            name,
+            script
+        );
+    }
+    Ok(())
+}
+
+fn validate_command_source(name: &str, script: &str, hooks_source: &Path) -> Result<PathBuf> {
+    let canonical_root = hooks_source.canonicalize().with_context(|| {
+        format!(
+            "Cannot resolve hooks source for command hook '{}': {}",
+            name,
+            hooks_source.display()
+        )
+    })?;
+    let source = hooks_source.join(script);
+    let canonical_source = source.canonicalize().with_context(|| {
+        format!(
+            "Cannot resolve command hook '{}' script source: {}",
+            name,
+            source.display()
+        )
+    })?;
+    if !canonical_source.starts_with(&canonical_root) {
+        bail!(
+            "Invalid command hook '{}' script source '{}': resolved outside {}",
+            name,
+            canonical_source.display(),
+            canonical_root.display()
+        );
+    }
+    if !canonical_source.is_file() {
+        bail!(
+            "Invalid command hook '{}' script source '{}': expected a regular file",
+            name,
+            canonical_source.display()
+        );
+    }
+
+    Ok(canonical_source)
+}
+
+fn canonical_hook_target(hooks_target: &Path) -> Result<Option<PathBuf>> {
+    let metadata = match fs::symlink_metadata(hooks_target) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Cannot inspect hook target {}", hooks_target.display()))
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "Unsafe hook target {}: the hook directory itself must not be a symlink",
+            hooks_target.display()
+        );
+    }
+    if !metadata.is_dir() {
+        bail!(
+            "Invalid hook target {}: expected a directory",
+            hooks_target.display()
+        );
+    }
+    hooks_target
+        .canonicalize()
+        .map(Some)
+        .with_context(|| format!("Cannot resolve hook target {}", hooks_target.display()))
+}
+
+fn validate_command_destination(
+    command: &CommandScript,
+    hooks_target: &Path,
+    canonical_target: &Path,
+) -> Result<(PathBuf, bool)> {
+    let destination = hooks_target.join(&command.script);
+    let parent = destination
+        .parent()
+        .with_context(|| format!("Hook destination has no parent: {}", destination.display()))?;
+    let canonical_parent = parent.canonicalize().with_context(|| {
+        format!(
+            "Cannot resolve destination parent for command hook '{}': {}",
+            command.hook_name,
+            parent.display()
+        )
+    })?;
+    if canonical_parent != canonical_target {
+        bail!(
+            "Unsafe command hook '{}' destination '{}': parent resolves outside {}",
+            command.hook_name,
+            destination.display(),
+            canonical_target.display()
+        );
+    }
+
+    let exists = match fs::symlink_metadata(&destination) {
+        Ok(metadata) => {
+            if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                bail!(
+                    "Invalid command hook '{}' destination '{}': expected a file or symlink",
+                    command.hook_name,
+                    destination.display()
+                );
+            }
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Cannot inspect command hook '{}' destination: {}",
+                    command.hook_name,
+                    destination.display()
+                )
+            })
+        }
+    };
+    Ok((destination, exists))
+}
+
+fn install_command_scripts(
+    sources: &[CommandSource],
+    hooks_target: &Path,
+    force: bool,
+) -> Result<()> {
+    if sources.is_empty() {
+        return Ok(());
+    }
+
+    let canonical_target = match canonical_hook_target(hooks_target)? {
+        Some(target) => target,
+        None => {
+            fs::create_dir_all(hooks_target)
+                .with_context(|| format!("Cannot create {}", hooks_target.display()))?;
+            canonical_hook_target(hooks_target)?.with_context(|| {
+                format!("Hook target was not created: {}", hooks_target.display())
+            })?
+        }
+    };
+    let destinations = sources
+        .iter()
+        .map(|source| {
+            validate_command_destination(&source.command, hooks_target, &canonical_target)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    for (source, (destination, exists)) in sources.iter().zip(destinations) {
+        if exists {
+            if !force {
+                ui::warn(&format!(
+                    "Already exists (use -f to overwrite): {}",
+                    source.command.script
+                ));
+                continue;
+            }
+            fs::remove_file(&destination)?;
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&source.canonical_source, &destination)?;
+        ui::success(&format!(
+            "Linked: {} ({})",
+            source.command.hook_name, source.command.script
+        ));
+    }
+    Ok(())
+}
+
+fn uninstall_command_scripts(scripts: &[CommandScript], hooks_target: &Path) -> Result<()> {
+    if scripts.is_empty() {
+        return Ok(());
+    }
+    let Some(canonical_target) = canonical_hook_target(hooks_target)? else {
+        return Ok(());
+    };
+    let destinations = scripts
+        .iter()
+        .map(|script| validate_command_destination(script, hooks_target, &canonical_target))
+        .collect::<Result<Vec<_>>>()?;
+
+    for (script, (destination, exists)) in scripts.iter().zip(destinations) {
+        if exists {
+            fs::remove_file(&destination)?;
+            ui::success(&format!("Removed script: {}", script.script));
+        }
+    }
+    Ok(())
+}
+
+fn prompt_preview(prompt: &str) -> String {
+    let mut chars = prompt.chars();
+    let prefix: String = chars.by_ref().take(80).collect();
+    if chars.next().is_some() {
+        format!("{}...", prefix)
+    } else {
+        prefix
+    }
+}
+
+fn ensure_command_success(name: &str, status: &std::process::ExitStatus) -> Result<()> {
+    if !status.success() {
+        bail!("Hook '{}' command failed with status {}", name, status);
+    }
+    Ok(())
+}
+
+fn ensure_http_success(name: &str, status: u16) -> Result<()> {
+    if !(200..300).contains(&status) {
+        bail!("Hook '{}' HTTP request returned status {}", name, status);
+    }
+    Ok(())
 }
 
 fn load_installed_hooks() -> Result<serde_json::Value> {
@@ -848,4 +1113,377 @@ fn is_handler_duplicate(
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_registry(value: serde_json::Value) -> HookRegistry {
+        serde_json::from_value(value).expect("test registry should deserialize")
+    }
+
+    #[test]
+    fn hook_payload_validation_accepts_each_valid_kind() {
+        let cases = [
+            serde_json::json!({
+                "command-hook": {
+                    "description": "command",
+                    "event": "PreToolUse",
+                    "type": "command",
+                    "script": "check.sh"
+                }
+            }),
+            serde_json::json!({
+                "http-hook": {
+                    "description": "http",
+                    "event": "PreToolUse",
+                    "type": "http",
+                    "url": "https://example.test/hook"
+                }
+            }),
+            serde_json::json!({
+                "prompt-hook": {
+                    "description": "prompt",
+                    "event": "PreToolUse",
+                    "type": "prompt",
+                    "prompt": "Review the event"
+                }
+            }),
+            serde_json::json!({
+                "agent-hook": {
+                    "description": "agent",
+                    "event": "PreToolUse",
+                    "type": "agent",
+                    "prompt": "Inspect the event"
+                }
+            }),
+        ];
+
+        for case in cases {
+            let registry = parse_registry(case);
+            validate_registry_payloads(&registry, Path::new("/fixture/hooks.json")).unwrap();
+        }
+    }
+
+    #[test]
+    fn hook_payload_validation_rejects_missing_or_blank_fields_for_each_kind() {
+        let cases = [
+            (
+                "command-hook",
+                "script",
+                serde_json::json!({
+                    "command-hook": {
+                        "description": "command",
+                        "event": "PreToolUse",
+                        "type": "command"
+                    }
+                }),
+            ),
+            (
+                "http-hook",
+                "url",
+                serde_json::json!({
+                    "http-hook": {
+                        "description": "http",
+                        "event": "PreToolUse",
+                        "type": "http",
+                        "url": "  "
+                    }
+                }),
+            ),
+            (
+                "prompt-hook",
+                "prompt",
+                serde_json::json!({
+                    "prompt-hook": {
+                        "description": "prompt",
+                        "event": "PreToolUse",
+                        "type": "prompt"
+                    }
+                }),
+            ),
+            (
+                "agent-hook",
+                "prompt",
+                serde_json::json!({
+                    "agent-hook": {
+                        "description": "agent",
+                        "event": "PreToolUse",
+                        "type": "agent",
+                        "prompt": "\n\t"
+                    }
+                }),
+            ),
+        ];
+
+        for (name, field, case) in cases {
+            let registry = parse_registry(case);
+            let error = validate_registry_payloads(&registry, Path::new("/fixture/hooks.json"))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(name), "{error}");
+            assert!(error.contains(field), "{error}");
+            assert!(error.contains("/fixture/hooks.json"), "{error}");
+        }
+    }
+
+    #[test]
+    fn command_script_validation_requires_one_contained_regular_file() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let hooks_source = temp.path().join("hooks");
+        fs::create_dir(&hooks_source).unwrap();
+        let valid_source = hooks_source.join("check.sh");
+        fs::write(&valid_source, "#!/bin/sh\n").unwrap();
+
+        assert_eq!(
+            validate_command_source("valid", "check.sh", &hooks_source).unwrap(),
+            valid_source.canonicalize().unwrap()
+        );
+        for invalid in ["", ".", "..", "nested/check.sh", "/tmp/check.sh"] {
+            assert!(validate_command_script_name("invalid", invalid).is_err());
+        }
+
+        fs::create_dir(hooks_source.join("directory")).unwrap();
+        assert!(validate_command_source("directory", "directory", &hooks_source).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_script_validation_rejects_symlinks_outside_hooks_source() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let hooks_source = temp.path().join("hooks");
+        fs::create_dir(&hooks_source).unwrap();
+        let sentinel = temp.path().join("outside.sh");
+        fs::write(&sentinel, "outside sentinel").unwrap();
+        std::os::unix::fs::symlink(&sentinel, hooks_source.join("escape.sh")).unwrap();
+
+        let error = validate_command_source("escape", "escape.sh", &hooks_source)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("resolved outside"), "{error}");
+        assert_eq!(fs::read_to_string(sentinel).unwrap(), "outside sentinel");
+    }
+
+    #[test]
+    fn command_script_validation_ignores_script_fields_on_other_hook_types() {
+        let registry = parse_registry(serde_json::json!({
+            "http-hook": {
+                "description": "http",
+                "event": "PreToolUse",
+                "type": "http",
+                "url": "https://example.test/hook",
+                "script": "../outside.sh"
+            }
+        }));
+        let hooks: Vec<_> = registry.iter().collect();
+
+        assert!(validate_command_script_names(&hooks).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_deduplicates_command_hooks_that_share_a_script() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let hooks_source = temp.path().join("source");
+        let hooks_target = temp.path().join("target");
+        fs::create_dir(&hooks_source).unwrap();
+        let source = hooks_source.join("check.sh");
+        fs::write(&source, "#!/bin/sh\n").unwrap();
+        let registry = parse_registry(serde_json::json!({
+            "command-a": {
+                "description": "command a",
+                "event": "PreToolUse",
+                "type": "command",
+                "script": "check.sh"
+            },
+            "command-b": {
+                "description": "command b",
+                "event": "PostToolUse",
+                "type": "command",
+                "script": "check.sh"
+            }
+        }));
+        let hooks: Vec<_> = registry.iter().collect();
+        let sources = validate_command_sources(&hooks, &hooks_source).unwrap();
+
+        assert_eq!(sources.len(), 1);
+        install_command_scripts(&sources, &hooks_target, false).unwrap();
+        assert_eq!(
+            fs::read_link(hooks_target.join("check.sh")).unwrap(),
+            source.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn uninstall_deduplicates_command_hooks_that_share_a_script() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let hooks_target = temp.path().join("target");
+        fs::create_dir(&hooks_target).unwrap();
+        let destination = hooks_target.join("check.sh");
+        fs::write(&destination, "installed hook").unwrap();
+        let registry = parse_registry(serde_json::json!({
+            "command-a": {
+                "description": "command a",
+                "event": "PreToolUse",
+                "type": "command",
+                "script": "check.sh"
+            },
+            "command-b": {
+                "description": "command b",
+                "event": "PostToolUse",
+                "type": "command",
+                "script": "check.sh"
+            }
+        }));
+        let hooks: Vec<_> = registry.iter().collect();
+        let scripts = validate_command_script_names(&hooks).unwrap();
+
+        assert_eq!(scripts.len(), 1);
+        uninstall_command_scripts(&scripts, &hooks_target).unwrap();
+        assert!(fs::symlink_metadata(destination).is_err());
+    }
+
+    #[test]
+    fn command_batch_preflight_preserves_earlier_destination_when_later_is_invalid() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let hooks_source = temp.path().join("source");
+        let hooks_target = temp.path().join("target");
+        fs::create_dir(&hooks_source).unwrap();
+        fs::create_dir(&hooks_target).unwrap();
+        fs::write(hooks_source.join("a.sh"), "new a").unwrap();
+        fs::write(hooks_source.join("b.sh"), "new b").unwrap();
+        let earlier = hooks_target.join("a.sh");
+        fs::write(&earlier, "outside sentinel").unwrap();
+        fs::create_dir(hooks_target.join("b.sh")).unwrap();
+        let registry = parse_registry(serde_json::json!({
+            "command-a": {
+                "description": "command a",
+                "event": "PreToolUse",
+                "type": "command",
+                "script": "a.sh"
+            },
+            "command-b": {
+                "description": "command b",
+                "event": "PostToolUse",
+                "type": "command",
+                "script": "b.sh"
+            }
+        }));
+        let hooks: Vec<_> = registry.iter().collect();
+        let sources = validate_command_sources(&hooks, &hooks_source).unwrap();
+        let scripts = validate_command_script_names(&hooks).unwrap();
+
+        assert!(install_command_scripts(&sources, &hooks_target, true).is_err());
+        assert_eq!(fs::read_to_string(&earlier).unwrap(), "outside sentinel");
+        assert!(uninstall_command_scripts(&scripts, &hooks_target).is_err());
+        assert_eq!(fs::read_to_string(earlier).unwrap(), "outside sentinel");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_rejects_symlinked_target_root_without_touching_outside_sentinel() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let hooks_source = temp.path().join("source");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&hooks_source).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(hooks_source.join("check.sh"), "#!/bin/sh\n").unwrap();
+        let sentinel = outside.join("check.sh");
+        fs::write(&sentinel, "outside sentinel").unwrap();
+        let hooks_target = temp.path().join("target");
+        std::os::unix::fs::symlink(&outside, &hooks_target).unwrap();
+
+        let registry = parse_registry(serde_json::json!({
+            "command-hook": {
+                "description": "command",
+                "event": "PreToolUse",
+                "type": "command",
+                "script": "check.sh"
+            }
+        }));
+        let hooks: Vec<_> = registry.iter().collect();
+        let sources = validate_command_sources(&hooks, &hooks_source).unwrap();
+
+        let error = install_command_scripts(&sources, &hooks_target, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("must not be a symlink"), "{error}");
+        assert_eq!(fs::read_to_string(sentinel).unwrap(), "outside sentinel");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_rejects_symlinked_target_root_without_touching_outside_sentinel() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        let sentinel = outside.join("check.sh");
+        fs::write(&sentinel, "outside sentinel").unwrap();
+        let hooks_target = temp.path().join("target");
+        std::os::unix::fs::symlink(&outside, &hooks_target).unwrap();
+        let scripts = vec![CommandScript {
+            hook_name: "command-hook".to_string(),
+            script: "check.sh".to_string(),
+        }];
+
+        let error = uninstall_command_scripts(&scripts, &hooks_target)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("must not be a symlink"), "{error}");
+        assert_eq!(fs::read_to_string(sentinel).unwrap(), "outside sentinel");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_removes_stale_link_without_original_source() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let hooks_target = temp.path().join("target");
+        fs::create_dir(&hooks_target).unwrap();
+        let destination = hooks_target.join("check.sh");
+        std::os::unix::fs::symlink(temp.path().join("missing-source.sh"), &destination).unwrap();
+        let scripts = vec![CommandScript {
+            hook_name: "command-hook".to_string(),
+            script: "check.sh".to_string(),
+        }];
+
+        uninstall_command_scripts(&scripts, &hooks_target).unwrap();
+
+        assert!(fs::symlink_metadata(destination).is_err());
+    }
+
+    #[test]
+    fn http_status_validation_accepts_only_success_responses() {
+        assert!(ensure_http_success("http-hook", 200).is_ok());
+        assert!(ensure_http_success("http-hook", 299).is_ok());
+        assert!(ensure_http_success("http-hook", 302).is_err());
+        assert!(ensure_http_success("http-hook", 500).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_status_validation_rejects_nonzero_exit() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let success = std::process::ExitStatus::from_raw(0);
+        let failure = std::process::ExitStatus::from_raw(7 << 8);
+        assert!(ensure_command_success("command-hook", &success).is_ok());
+        assert!(ensure_command_success("command-hook", &failure).is_err());
+    }
+
+    #[test]
+    fn prompt_preview_preserves_ascii_limit_and_unicode_boundaries() {
+        let ascii_80 = "a".repeat(80);
+        assert_eq!(prompt_preview(&ascii_80), ascii_80);
+        assert_eq!(
+            prompt_preview(&"a".repeat(81)),
+            format!("{}...", "a".repeat(80))
+        );
+
+        let korean = "가".repeat(81);
+        assert_eq!(prompt_preview(&korean), format!("{}...", "가".repeat(80)));
+
+        let emoji = format!("{}{}", "🙂".repeat(80), "🚀");
+        assert_eq!(prompt_preview(&emoji), format!("{}...", "🙂".repeat(80)));
+    }
 }
