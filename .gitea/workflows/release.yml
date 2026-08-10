@@ -16,18 +16,134 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Override version (without leading v). Empty = derive from tag.'
+        description: 'Expected version (without leading v). Must match checked-in manifests.'
         required: false
       dry_run:
         description: 'Build only — skip npm publish and GitHub release upload.'
         required: false
-        default: 'false'
+        default: 'true'
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      should_publish: ${{ steps.version.outputs.should_publish }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate checked-in release version
+        id: version
+        env:
+          RELEASE_VERSION_INPUT: ${{ inputs.version }}
+          RELEASE_DRY_RUN: ${{ inputs.dry_run }}
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+
+          cargo_version="$(awk '
+            /^\[package\]$/ { in_package = 1; next }
+            in_package && /^\[/ { exit }
+            in_package && /^version = "/ {
+              value = $0
+              sub(/^version = "/, "", value)
+              sub(/"$/, "", value)
+              print value
+              exit
+            }
+          ' agt/Cargo.toml)"
+          lock_version="$(awk '
+            /^\[\[package\]\]$/ { in_agt = 0; next }
+            /^name = "agt"$/ { in_agt = 1; next }
+            in_agt && /^version = "/ {
+              value = $0
+              sub(/^version = "/, "", value)
+              sub(/"$/, "", value)
+              print value
+              exit
+            }
+          ' agt/Cargo.lock)"
+
+          if [[ ! "$cargo_version" =~ ^[0-9]{4}\.(0?[1-9]|1[0-2])\.(0?[1-9]|[12][0-9]|3[01])$ ]]; then
+            echo "Invalid Cargo release version: expected YYYY.M.D, got '$cargo_version'" >&2
+            exit 1
+          fi
+          if [ "$lock_version" != "$cargo_version" ]; then
+            echo "Version mismatch: agt/Cargo.lock=$lock_version, agt/Cargo.toml=$cargo_version" >&2
+            exit 1
+          fi
+
+          for manifest in npm/package.json npm/platforms/*/package.json; do
+            manifest_version="$(node -p "require('./$manifest').version")"
+            if [ "$manifest_version" != "$cargo_version" ]; then
+              echo "Version mismatch: $manifest=$manifest_version, agt/Cargo.toml=$cargo_version" >&2
+              exit 1
+            fi
+          done
+
+          for package_name in \
+            @open330/agt-darwin-arm64 \
+            @open330/agt-linux-x64 \
+            @open330/agt-linux-arm64; do
+            dependency_version="$(node -p "require('./npm/package.json').optionalDependencies['$package_name']")"
+            if [ "$dependency_version" != "$cargo_version" ]; then
+              echo "Version mismatch: npm optionalDependency $package_name=$dependency_version, agt/Cargo.toml=$cargo_version" >&2
+              exit 1
+            fi
+          done
+
+          if [ -n "$RELEASE_VERSION_INPUT" ] && [ "$RELEASE_VERSION_INPUT" != "$cargo_version" ]; then
+            echo "Version input '$RELEASE_VERSION_INPUT' does not match checked-in version '$cargo_version'" >&2
+            exit 1
+          fi
+
+          expected_ref="refs/tags/v$cargo_version"
+          should_publish=false
+          case "$RELEASE_EVENT" in
+            push)
+              if [ "$RELEASE_REF" != "$expected_ref" ]; then
+                echo "Release tag '$RELEASE_REF' does not exactly match '$expected_ref'" >&2
+                exit 1
+              fi
+              should_publish=true
+              ;;
+            workflow_dispatch)
+              case "$RELEASE_DRY_RUN" in
+                ''|true)
+                  ;;
+                false)
+                  if [ -z "$RELEASE_VERSION_INPUT" ]; then
+                    echo "Manual publication requires an explicit version input" >&2
+                    exit 1
+                  fi
+                  if [ "$RELEASE_REF" != "$expected_ref" ]; then
+                    echo "Manual publication requires the exact tag '$expected_ref'; got '$RELEASE_REF'" >&2
+                    exit 1
+                  fi
+                  should_publish=true
+                  ;;
+                *)
+                  echo "Invalid dry_run input '$RELEASE_DRY_RUN': expected true or false" >&2
+                  exit 1
+                  ;;
+              esac
+              ;;
+            *)
+              echo "Unsupported release event '$RELEASE_EVENT'" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
+          echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
+          echo "Validated release version: $cargo_version (publish=$should_publish)"
+
   build-darwin-arm64:
+    needs: validate-version
     runs-on: macos-arm64
     steps:
       - uses: actions/checkout@v4
@@ -42,10 +158,17 @@ jobs:
         run: cargo build --release --manifest-path agt/Cargo.toml --target aarch64-apple-darwin
 
       - name: Stage outputs
+        env:
+          RELEASE_VERSION: ${{ needs.validate-version.outputs.version }}
         run: |
           mkdir -p out
           cp agt/target/aarch64-apple-darwin/release/agt out/agt
           file out/agt
+          version_output="$(out/agt --version)"
+          if [ "$version_output" != "agt $RELEASE_VERSION" ]; then
+            echo "Binary version mismatch: expected 'agt $RELEASE_VERSION', got '$version_output'" >&2
+            exit 1
+          fi
           tar -C out -czf "out/agt-aarch64-apple-darwin.tar.gz" agt
 
       - uses: actions/upload-artifact@v3
@@ -56,6 +179,7 @@ jobs:
             out/agt-aarch64-apple-darwin.tar.gz
 
   build-linux:
+    needs: validate-version
     runs-on: ubuntu-latest
     # Default container (catthehacker/ubuntu:act-latest) has node + apt + pip,
     # which JS actions need. We add rust + zig manually so the build can
@@ -106,10 +230,26 @@ jobs:
           cargo zigbuild --release --manifest-path agt/Cargo.toml --target ${{ matrix.target }}
 
       - name: Stage outputs
+        env:
+          RELEASE_VERSION: ${{ needs.validate-version.outputs.version }}
         run: |
           mkdir -p out
           cp agt/target/${{ matrix.target }}/release/agt out/agt
           file out/agt
+          case "$(uname -m)" in
+            x86_64) runner_target=x86_64-unknown-linux-musl ;;
+            aarch64|arm64) runner_target=aarch64-unknown-linux-musl ;;
+            *) runner_target=unsupported ;;
+          esac
+          if [ "$runner_target" = "${{ matrix.target }}" ]; then
+            version_output="$(out/agt --version)"
+            if [ "$version_output" != "agt $RELEASE_VERSION" ]; then
+              echo "Binary version mismatch: expected 'agt $RELEASE_VERSION', got '$version_output'" >&2
+              exit 1
+            fi
+          else
+            echo "Skipping executable version check for cross-built ${{ matrix.target }} on $(uname -m)."
+          fi
           tar -C out -czf "out/agt-${{ matrix.target }}.tar.gz" agt
 
       - uses: actions/upload-artifact@v3
@@ -120,9 +260,9 @@ jobs:
             out/agt-${{ matrix.target }}.tar.gz
 
   publish-npm:
-    needs: [build-darwin-arm64, build-linux]
+    needs: [validate-version, build-darwin-arm64, build-linux]
     runs-on: ubuntu-latest
-    if: ${{ inputs.dry_run != 'true' }}
+    if: ${{ needs.validate-version.outputs.should_publish == 'true' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -143,20 +283,6 @@ jobs:
           done
           ls -la npm/platforms/*/bin/agt
 
-      - name: Resolve version
-        id: ver
-        run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            V="${{ inputs.version }}"
-          else
-            V="${GITHUB_REF_NAME#v}"
-          fi
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "Releasing version: $V"
-
-      - name: Bump versions across all manifests
-        run: bash scripts/bump-version.sh "${{ steps.ver.outputs.version }}"
-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -176,9 +302,10 @@ jobs:
       - name: Publish platform packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_VERSION: ${{ needs.validate-version.outputs.version }}
         run: |
           set -e
-          V="${{ steps.ver.outputs.version }}"
+          V="$RELEASE_VERSION"
           for p in linux-x64 linux-arm64 darwin-arm64; do
             PKG="@open330/agt-$p"
             if npm view "$PKG@$V" version >/dev/null 2>&1; then
@@ -191,9 +318,10 @@ jobs:
       - name: Publish wrapper package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_VERSION: ${{ needs.validate-version.outputs.version }}
         run: |
           set -e
-          V="${{ steps.ver.outputs.version }}"
+          V="$RELEASE_VERSION"
           if npm view "@open330/agt@$V" version >/dev/null 2>&1; then
             echo "↩ skip @open330/agt@$V (already on registry)"
           else
@@ -218,9 +346,9 @@ jobs:
   # `Contents: Read and write` on Open330/agt stored as GH_RELEASE_TOKEN
   # (fine-grained PAT). Skipped silently if the secret is absent.
   github-release:
-    needs: [build-darwin-arm64, build-linux, publish-npm]
+    needs: [validate-version, build-darwin-arm64, build-linux, publish-npm]
     runs-on: ubuntu-latest
-    if: ${{ inputs.dry_run != 'true' }}
+    if: ${{ needs.validate-version.outputs.should_publish == 'true' }}
     steps:
       - uses: actions/download-artifact@v3
         with: { name: agt-darwin-arm64, path: dl/darwin-arm64 }
@@ -238,33 +366,90 @@ jobs:
       - name: Push tarballs to GitHub release
         env:
           GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          RELEASE_VERSION: ${{ needs.validate-version.outputs.version }}
         run: |
+          set -euo pipefail
           if [ -z "$GH_TOKEN" ]; then
             echo "GH_RELEASE_TOKEN secret not set on Gitea repo; skipping GitHub release upload."
             exit 0
           fi
-          # Tag-triggered runs use GITHUB_REF_NAME directly; workflow_dispatch
-          # runs (ref=main) derive the tag from the version input.
-          if [ -n "${{ inputs.version }}" ]; then
-            TAG="v${{ inputs.version }}"
-          else
-            TAG="${GITHUB_REF_NAME}"
-          fi
+          TAG="v$RELEASE_VERSION"
           REPO="Open330/agt"
-          # Find or create release on GitHub
-          RID=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/$REPO/releases/tags/$TAG" | jq -r '.id // empty')
-          if [ -z "$RID" ]; then
-            RID=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/json" \
-              "https://api.github.com/repos/$REPO/releases" \
-              -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"generate_release_notes\":true}" \
-              | jq -r '.id')
+          API_TMP="$(mktemp -d)"
+          trap 'rm -rf -- "$API_TMP"' EXIT
+          RELEASE_BODY="$API_TMP/release.json"
+
+          LOOKUP_STATUS="$(curl --silent --show-error --location \
+            --output "$RELEASE_BODY" --write-out '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$REPO/releases/tags/$TAG")"
+          case "$LOOKUP_STATUS" in
+            200)
+              ;;
+            404)
+              CREATE_PAYLOAD="$(jq -nc --arg tag "$TAG" \
+                '{tag_name:$tag,name:$tag,generate_release_notes:true}')"
+              CREATE_STATUS="$(curl --silent --show-error --location \
+                --output "$RELEASE_BODY" --write-out '%{http_code}' \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                -H "Content-Type: application/json" \
+                --data "$CREATE_PAYLOAD" \
+                "https://api.github.com/repos/$REPO/releases")"
+              if [ "$CREATE_STATUS" != 201 ]; then
+                echo "GitHub release creation failed with HTTP $CREATE_STATUS" >&2
+                jq -r '.message // "Invalid JSON error response"' "$RELEASE_BODY" >&2 || true
+                exit 1
+              fi
+              ;;
+            *)
+              echo "GitHub release lookup failed with HTTP $LOOKUP_STATUS" >&2
+              jq -r '.message // "Invalid JSON error response"' "$RELEASE_BODY" >&2 || true
+              exit 1
+              ;;
+          esac
+
+          RID="$(jq -er --arg tag "$TAG" \
+            'select((.id | type) == "number" and .id > 0 and .tag_name == $tag) | .id' \
+            "$RELEASE_BODY")" || {
+              echo "GitHub release response lacks a valid id/tag_name" >&2
+              exit 1
+            }
+          UPLOAD_URL="$(jq -er \
+            'select((.upload_url | type) == "string") | .upload_url | sub("\\{.*$"; "") | select(startswith("https://uploads.github.com/"))' \
+            "$RELEASE_BODY")" || {
+              echo "GitHub release response lacks a valid upload_url" >&2
+              exit 1
+            }
+          if [ "$UPLOAD_URL" != "https://uploads.github.com/repos/$REPO/releases/$RID/assets" ]; then
+            echo "GitHub release response returned an unexpected upload_url" >&2
+            exit 1
           fi
           echo "GitHub release id: $RID"
           for f in release/*.tar.gz; do
-            curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+            asset_name="$(basename "$f")"
+            expected_download_url="https://github.com/$REPO/releases/download/$TAG/$asset_name"
+            UPLOAD_BODY="$API_TMP/upload-$asset_name.json"
+            UPLOAD_STATUS="$(curl --silent --show-error --location \
+              --output "$UPLOAD_BODY" --write-out '%{http_code}' \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
               -H "Content-Type: application/gzip" \
-              --data-binary "@${f}" \
-              "https://uploads.github.com/repos/$REPO/releases/$RID/assets?name=$(basename "$f")" \
-              | jq '{name, browser_download_url}'
+              --data-binary "@$f" \
+              "$UPLOAD_URL?name=$asset_name")"
+            if [ "$UPLOAD_STATUS" != 201 ]; then
+              echo "GitHub asset upload for '$asset_name' failed with HTTP $UPLOAD_STATUS" >&2
+              jq -r '.message // "Invalid JSON error response"' "$UPLOAD_BODY" >&2 || true
+              exit 1
+            fi
+            jq -er --arg name "$asset_name" --arg download_url "$expected_download_url" \
+              'select(.name == $name and .browser_download_url == $download_url) | {name, browser_download_url}' \
+              "$UPLOAD_BODY" || {
+                echo "GitHub asset response for '$asset_name' lacks valid name/download fields" >&2
+                exit 1
+              }
           done
