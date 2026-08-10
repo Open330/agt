@@ -4,22 +4,27 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::thread;
 
+fn codex_args(sandbox: Option<&str>) -> Vec<String> {
+    let mut args = vec!["exec".into()];
+    if let Some(mode) = sandbox {
+        args.extend(["--sandbox".into(), mode.into()]);
+    }
+    args.extend(["--skip-git-repo-check".into(), "-".into()]);
+    args
+}
+
+fn claude_args() -> [&'static str; 4] {
+    ["-p", "-", "--output-format", "text"]
+}
+
 /// Invoke an LLM CLI with a prompt and return the output.
 /// Uses stdin to pass prompts to avoid OS ARG_MAX limits.
 /// Streams stdout in real-time so users can see progress.
 pub fn invoke(cli: LlmCli, prompt: &str) -> Result<String> {
     let mut child = match cli {
         LlmCli::Codex => {
-            // Default to fully-bypassed approvals+sandbox — that's the only mode
-            // that makes sense for an unattended `agt skill use` run. If the user
-            // sets AGT_CODEX_SANDBOX (read-only | workspace-write |
-            // danger-full-access), we hand control back to codex's --sandbox flag.
-            let mut args: Vec<String> = vec!["exec".into()];
-            match std::env::var("AGT_CODEX_SANDBOX") {
-                Ok(mode) => args.extend(["--sandbox".into(), mode]),
-                Err(_) => args.push("--dangerously-bypass-approvals-and-sandbox".into()),
-            }
-            args.extend(["--skip-git-repo-check".into(), "-".into()]);
+            let sandbox = std::env::var("AGT_CODEX_SANDBOX").ok();
+            let args = codex_args(sandbox.as_deref());
             Command::new("codex")
                 .args(&args)
                 .stdin(Stdio::piped())
@@ -30,7 +35,7 @@ pub fn invoke(cli: LlmCli, prompt: &str) -> Result<String> {
         }
 
         LlmCli::Claude => Command::new("claude")
-            .args(["-p", "-", "--output-format", "text", "--dangerously-skip-permissions"])
+            .args(claude_args())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -103,7 +108,9 @@ pub fn invoke(cli: LlmCli, prompt: &str) -> Result<String> {
         }
     }
 
-    let status = child.wait().context(format!("Failed to wait for {}", cli))?;
+    let status = child
+        .wait()
+        .context(format!("Failed to wait for {}", cli))?;
     let _ = writer.join();
     let stderr_output = stderr_reader.join().unwrap_or_default();
 
@@ -114,3 +121,33 @@ pub fn invoke(cli: LlmCli, prompt: &str) -> Result<String> {
     Ok(output)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{claude_args, codex_args};
+
+    #[test]
+    fn codex_uses_safe_defaults() {
+        let args = codex_args(None);
+
+        assert_eq!(args, ["exec", "--skip-git-repo-check", "-"]);
+        assert!(!args.iter().any(|arg| arg.contains("dangerously")));
+    }
+
+    #[test]
+    fn codex_preserves_explicit_sandbox_modes() {
+        for mode in ["read-only", "workspace-write", "danger-full-access"] {
+            assert_eq!(
+                codex_args(Some(mode)),
+                ["exec", "--sandbox", mode, "--skip-git-repo-check", "-"]
+            );
+        }
+    }
+
+    #[test]
+    fn claude_uses_safe_defaults() {
+        let args = claude_args();
+
+        assert_eq!(args, ["-p", "-", "--output-format", "text"]);
+        assert!(!args.iter().any(|arg| arg.contains("dangerously")));
+    }
+}
