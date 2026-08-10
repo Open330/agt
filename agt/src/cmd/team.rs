@@ -546,39 +546,62 @@ fn load_all_templates() -> Result<BTreeMap<String, TeamTemplate>> {
 
     // 1. Bundled templates from source dir
     if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
-        load_templates_from_dir(&source_dir.join("teams"), &mut templates);
+        load_templates_from_dir(&source_dir.join("teams"), &mut templates)?;
     }
 
     // 2. Global user templates
     let global_dir = dirs::home_dir()
         .unwrap_or_default()
         .join(".claude/teams");
-    load_templates_from_dir(&global_dir, &mut templates);
+    load_templates_from_dir(&global_dir, &mut templates)?;
 
     // 3. Project-local templates (highest priority)
     let local_dir = PathBuf::from(".claude/teams");
-    load_templates_from_dir(&local_dir, &mut templates);
+    load_templates_from_dir(&local_dir, &mut templates)?;
 
     Ok(templates)
 }
 
-fn load_templates_from_dir(dir: &Path, templates: &mut BTreeMap<String, TeamTemplate>) {
-    if !dir.exists() {
-        return;
-    }
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let ext = path.extension().and_then(|e| e.to_str());
-            if ext == Some("yml") || ext == Some("yaml") {
-                if let Ok(content) = fs::read_to_string(&path) {
-                    if let Ok(template) = serde_yaml::from_str::<TeamTemplate>(&content) {
-                        templates.insert(template.name.clone(), template);
-                    }
+fn load_templates_from_dir(
+    dir: &Path,
+    templates: &mut BTreeMap<String, TeamTemplate>,
+) -> Result<()> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("Failed to read team template directory {}", dir.display())
+            })
+        }
+    };
+
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!(
+                "Failed to read an entry in team template directory {}",
+                dir.display()
+            )
+        })?;
+        let path = entry.path();
+        let ext = path.extension().and_then(|e| e.to_str());
+        if ext == Some("yml") || ext == Some("yaml") {
+            let content = match fs::read_to_string(&path) {
+                Ok(content) => content,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("Failed to read team template {}", path.display())
+                    })
                 }
-            }
+            };
+            let template = serde_yaml::from_str::<TeamTemplate>(&content)
+                .with_context(|| format!("Invalid team template YAML: {}", path.display()))?;
+            templates.insert(template.name.clone(), template);
         }
     }
+
+    Ok(())
 }
 
 fn load_template(name: &str) -> Result<TeamTemplate> {
@@ -631,4 +654,37 @@ fn get_teammate_mode() -> Result<Option<String>> {
         .get("teammateMode")
         .and_then(|v| v.as_str())
         .map(String::from))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn template(name: &str, description: &str) -> TeamTemplate {
+        TeamTemplate {
+            name: name.to_string(),
+            description: description.to_string(),
+            teammates: Vec::new(),
+            tasks: Vec::new(),
+            skills: Vec::new(),
+            hooks: BTreeMap::new(),
+            teammate_mode: default_teammate_mode(),
+            plan_approval: false,
+        }
+    }
+
+    #[test]
+    fn malformed_local_template_does_not_fall_back_to_lower_priority_template() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("review.yml");
+        fs::write(&path, "name: review\ndescription: [\n").unwrap();
+
+        let mut templates =
+            BTreeMap::from([("review".to_string(), template("review", "lower priority"))]);
+        let error = load_templates_from_dir(temp.path(), &mut templates).unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("Invalid team template YAML"));
+        assert!(message.contains(&path.display().to_string()));
+    }
 }

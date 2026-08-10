@@ -107,7 +107,7 @@ fn select_profile(source_dir: &Path, theme: &ColorfulTheme, remote: bool) -> Res
         config::list_profiles_remote(source_dir)
     } else {
         config::list_profiles(source_dir)
-    };
+    }?;
     if profiles.is_empty() {
         bail!("No profiles available");
     }
