@@ -4,13 +4,18 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::thread;
 
-fn codex_args(sandbox: Option<&str>) -> Vec<String> {
+fn codex_args(sandbox: Option<&str>) -> Result<Vec<String>> {
     let mut args = vec!["exec".into()];
     if let Some(mode) = sandbox {
+        if !matches!(mode, "read-only" | "workspace-write" | "danger-full-access") {
+            bail!(
+                "Invalid AGT_CODEX_SANDBOX: expected read-only, workspace-write, or danger-full-access"
+            );
+        }
         args.extend(["--sandbox".into(), mode.into()]);
     }
     args.extend(["--skip-git-repo-check".into(), "-".into()]);
-    args
+    Ok(args)
 }
 
 fn claude_args() -> [&'static str; 4] {
@@ -23,8 +28,14 @@ fn claude_args() -> [&'static str; 4] {
 pub fn invoke(cli: LlmCli, prompt: &str) -> Result<String> {
     let mut child = match cli {
         LlmCli::Codex => {
-            let sandbox = std::env::var("AGT_CODEX_SANDBOX").ok();
-            let args = codex_args(sandbox.as_deref());
+            let sandbox = match std::env::var("AGT_CODEX_SANDBOX") {
+                Ok(mode) => Some(mode),
+                Err(std::env::VarError::NotPresent) => None,
+                Err(std::env::VarError::NotUnicode(_)) => {
+                    bail!("Invalid AGT_CODEX_SANDBOX: expected valid Unicode")
+                }
+            };
+            let args = codex_args(sandbox.as_deref())?;
             Command::new("codex")
                 .args(&args)
                 .stdin(Stdio::piped())
@@ -127,7 +138,7 @@ mod tests {
 
     #[test]
     fn codex_uses_safe_defaults() {
-        let args = codex_args(None);
+        let args = codex_args(None).unwrap();
 
         assert_eq!(args, ["exec", "--skip-git-repo-check", "-"]);
         assert!(!args.iter().any(|arg| arg.contains("dangerously")));
@@ -137,8 +148,24 @@ mod tests {
     fn codex_preserves_explicit_sandbox_modes() {
         for mode in ["read-only", "workspace-write", "danger-full-access"] {
             assert_eq!(
-                codex_args(Some(mode)),
+                codex_args(Some(mode)).unwrap(),
                 ["exec", "--sandbox", mode, "--skip-git-repo-check", "-"]
+            );
+        }
+    }
+
+    #[test]
+    fn codex_rejects_invalid_sandbox_modes() {
+        for mode in [
+            "",
+            " read-only",
+            "read-only ",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "unsupported",
+        ] {
+            assert!(
+                codex_args(Some(mode)).is_err(),
+                "sandbox mode {mode:?} should be rejected"
             );
         }
     }
