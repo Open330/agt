@@ -210,7 +210,17 @@ pub fn execute(action: PersonaAction) -> Result<()> {
             } else {
                 Some(prompt.join(" "))
             };
-            review(&name, custom_prompt, codex, claude, gemini, opencode, staged, base, output)
+            review(
+                &name,
+                custom_prompt,
+                codex,
+                claude,
+                gemini,
+                opencode,
+                staged,
+                base,
+                output,
+            )
         }
     }
 }
@@ -249,14 +259,66 @@ fn install(
     fs::create_dir_all(&target_dir)?;
     let link_path = target_dir.join(&name);
 
-    util::ensure_target_clear(&link_path, force, &name)?;
-
-    symlink(&persona_path, &link_path)?;
+    install_single_local_persona_link(&persona_path, &link_path, force, &name)?;
 
     let scope = if global { "global" } else { "local" };
     ui::success(&format!("Installed persona '{}' ({})", name, scope));
     post_persona_install();
     Ok(())
+}
+
+fn install_single_local_persona_link(
+    persona_path: &Path,
+    link_path: &Path,
+    force: bool,
+    name: &str,
+) -> Result<()> {
+    install_single_local_persona_link_with(
+        persona_path,
+        link_path,
+        force,
+        name,
+        |source, destination| util::replace_symlink_transactionally(source, destination),
+    )
+}
+
+fn install_single_local_persona_link_with<R>(
+    persona_path: &Path,
+    link_path: &Path,
+    force: bool,
+    name: &str,
+    mut replace: R,
+) -> Result<()>
+where
+    R: FnMut(&Path, &Path) -> Result<()>,
+{
+    if !force {
+        util::ensure_target_clear(link_path, false, name)?;
+    }
+    create_local_persona_link_with(persona_path, link_path, force, &mut replace)
+}
+
+fn create_local_persona_link_with<R>(
+    persona_path: &Path,
+    link_path: &Path,
+    force: bool,
+    replace: &mut R,
+) -> Result<()>
+where
+    R: FnMut(&Path, &Path) -> Result<()>,
+{
+    if force {
+        replace(persona_path, link_path)
+    } else {
+        symlink(persona_path, link_path).map_err(anyhow::Error::from)
+    }
+    .with_context(|| {
+        format!(
+            "Failed to create persona symlink: {} -> {}",
+            link_path.display(),
+            persona_path.display()
+        )
+    })
 }
 
 /// Find a persona in the library — handles both directories and .md files
@@ -303,6 +365,28 @@ fn install_all(persona_lib: &Path, global: bool, force: bool) -> Result<()> {
     };
     fs::create_dir_all(&target_dir)?;
 
+    let count =
+        install_all_from_library_with(persona_lib, &target_dir, force, |source, destination| {
+            util::replace_symlink_transactionally(source, destination)
+        })?;
+
+    let scope = if global { "global" } else { "local" };
+    ui::success(&format!("Installed {} personas ({})", count, scope));
+    if count > 0 {
+        post_persona_install();
+    }
+    Ok(())
+}
+
+fn install_all_from_library_with<R>(
+    persona_lib: &Path,
+    target_dir: &Path,
+    force: bool,
+    mut replace: R,
+) -> Result<usize>
+where
+    R: FnMut(&Path, &Path) -> Result<()>,
+{
     let mut count = 0;
     for entry in fs::read_dir(persona_lib)?.flatten() {
         let path = entry.path();
@@ -313,32 +397,24 @@ fn install_all(persona_lib: &Path, global: bool, force: bool) -> Result<()> {
             continue;
         }
 
-        let name = raw_name.strip_suffix(".md").unwrap_or(&raw_name).to_string();
+        let name = raw_name
+            .strip_suffix(".md")
+            .unwrap_or(&raw_name)
+            .to_string();
         let link_path = target_dir.join(&name);
 
-        if link_path.exists() || link_path.is_symlink() {
-            if force {
-                if link_path.is_symlink() || link_path.is_file() {
-                    fs::remove_file(&link_path)?;
-                } else {
-                    fs::remove_dir_all(&link_path)?;
-                }
-            } else {
-                ui::warn(&format!("Skipping '{}' (already exists, use --force)", name));
-                continue;
-            }
+        if !force && (link_path.exists() || link_path.is_symlink()) {
+            ui::warn(&format!(
+                "Skipping '{}' (already exists, use --force)",
+                name
+            ));
+            continue;
         }
 
-        symlink(&path, &link_path)?;
+        create_local_persona_link_with(&path, &link_path, force, &mut replace)?;
         count += 1;
     }
-
-    let scope = if global { "global" } else { "local" };
-    ui::success(&format!("Installed {} personas ({})", count, scope));
-    if count > 0 {
-        post_persona_install();
-    }
-    Ok(())
+    Ok(count)
 }
 
 fn install_remote(spec_str: &str, global: bool, force: bool) -> Result<()> {
@@ -348,6 +424,7 @@ fn install_remote(spec_str: &str, global: bool, force: bool) -> Result<()> {
     if spec.path.is_empty() {
         return install_remote_repo(&spec, global, force);
     }
+    remote::validate_source_path(&spec.path)?;
 
     ui::info(&format!("Downloading {}...", spec));
 
@@ -449,13 +526,20 @@ where
 }
 
 fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> Result<()> {
-    ui::info(&format!("Downloading {}/{}@{}...", spec.owner, spec.repo, spec.git_ref));
+    ui::info(&format!(
+        "Downloading {}/{}@{}...",
+        spec.owner, spec.repo, spec.git_ref
+    ));
     let (_tmp_dir, repo_root) = remote::fetch_dir(spec)?;
 
     // Look for personas/ directory in the repo
     let persona_dir = repo_root.join("personas");
     if !persona_dir.is_dir() {
-        bail!("No personas/ directory found in {}/{}", spec.owner, spec.repo);
+        bail!(
+            "No personas/ directory found in {}/{}",
+            spec.owner,
+            spec.repo
+        );
     }
 
     // Discover all personas in the repo
@@ -470,7 +554,10 @@ fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> 
         let is_persona = if path.is_dir() {
             path.join("PERSONA.md").exists()
                 || fs::read_dir(&path)
-                    .map(|rd| rd.flatten().any(|e| e.path().extension().is_some_and(|ext| ext == "md")))
+                    .map(|rd| {
+                        rd.flatten()
+                            .any(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+                    })
                     .unwrap_or(false)
         } else {
             path.extension().is_some_and(|e| e == "md")
@@ -480,7 +567,10 @@ fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> 
             continue;
         }
 
-        let name = raw_name.strip_suffix(".md").unwrap_or(&raw_name).to_string();
+        let name = raw_name
+            .strip_suffix(".md")
+            .unwrap_or(&raw_name)
+            .to_string();
         let (role, _, _) = if path.is_dir() {
             read_persona_info(&path)
         } else {
@@ -497,9 +587,11 @@ fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> 
 
     // Interactive selection if TTY
     let is_tty = console::Term::stderr().is_term();
-    let installed_names = installed_persona_names(
-        &if global { config::global_persona_target() } else { config::local_persona_target() },
-    );
+    let installed_names = installed_persona_names(&if global {
+        config::global_persona_target()
+    } else {
+        config::local_persona_target()
+    });
 
     let names_to_install: Vec<String> = if is_tty {
         let persona_list: Vec<(String, String)> = available
@@ -515,7 +607,10 @@ fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> 
             }
         }
     } else {
-        available.iter().map(|(name, _, _, _)| name.clone()).collect()
+        available
+            .iter()
+            .map(|(name, _, _, _)| name.clone())
+            .collect()
     };
 
     let target_dir = if global {
@@ -565,37 +660,48 @@ fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> 
 }
 
 fn uninstall(name: &str, global: bool) -> Result<()> {
-    util::validate_name(name)?;
-    // Try to find the persona: check dir, .md file, in both local and global
-    let (path, scope) = if global {
-        (
-            find_installed_persona_for_removal(name, &config::global_persona_target())?,
-            "global",
-        )
-    } else {
-        // Try local first, then auto-detect global
-        let local = find_installed_persona_for_removal(name, &config::local_persona_target())?;
-        if local.is_some() {
-            (local, "local")
-        } else {
-            let global_found =
-                find_installed_persona_for_removal(name, &config::global_persona_target())?;
-            if global_found.is_some() {
-                (global_found, "global")
-            } else {
-                (None, "local")
-            }
-        }
-    };
-
-    let path = path.context(format!("Persona '{}' is not installed", name))?;
-    remove_persona_entry(
-        path.parent().context("Persona path has no store root")?,
-        &path,
+    let scope = uninstall_from_roots(
+        name,
+        global,
+        &config::local_persona_target(),
+        &config::global_persona_target(),
     )?;
 
     ui::success(&format!("Uninstalled persona '{}' ({})", name, scope));
     Ok(())
+}
+
+fn uninstall_from_roots(
+    name: &str,
+    global: bool,
+    local_dir: &Path,
+    global_dir: &Path,
+) -> Result<&'static str> {
+    util::validate_name(name)?;
+
+    let (dir, path, scope) = if global {
+        (
+            global_dir,
+            find_installed_persona_for_removal(name, global_dir)?,
+            "global",
+        )
+    } else {
+        let local = find_installed_persona_for_removal(name, local_dir)?;
+        if local.is_none() && find_installed_persona_for_removal(name, global_dir)?.is_some() {
+            bail!(
+                "Persona '{}' is installed globally; retry with --global to uninstall it",
+                name
+            );
+        }
+        (local_dir, local, "local")
+    };
+
+    let path = path.context(format!(
+        "Persona '{}' is not installed in {} scope",
+        name, scope
+    ))?;
+    remove_persona_entry(dir, &path)?;
+    Ok(scope)
 }
 
 fn uninstall_all(global: bool) -> Result<()> {
@@ -769,7 +875,11 @@ fn list(installed: bool, local: bool, global: bool, json: bool) -> Result<()> {
     let mut by_type: BTreeMap<String, Vec<&serde_json::Value>> = BTreeMap::new();
     for entry in &entries {
         let kind = entry["type"].as_str().unwrap_or("other").to_string();
-        let kind = if kind.is_empty() { "other".to_string() } else { kind };
+        let kind = if kind.is_empty() {
+            "other".to_string()
+        } else {
+            kind
+        };
         by_type.entry(kind).or_default().push(entry);
     }
 
@@ -809,7 +919,10 @@ fn list(installed: bool, local: bool, global: bool, json: bool) -> Result<()> {
         }
     }
 
-    ui::info(&format!("Total: {} personas, {} installed", total, total_installed));
+    ui::info(&format!(
+        "Total: {} personas, {} installed",
+        total, total_installed
+    ));
 
     Ok(())
 }
@@ -828,7 +941,11 @@ fn create(
 
     let persona_dir = target_dir.join(name);
     if persona_dir.exists() {
-        bail!("Persona '{}' already exists at {}", name, persona_dir.display());
+        bail!(
+            "Persona '{}' already exists at {}",
+            name,
+            persona_dir.display()
+        );
     }
 
     // Determine if AI generation is requested
@@ -859,7 +976,11 @@ fn create(
     fs::create_dir_all(&persona_dir)?;
     fs::write(persona_dir.join("PERSONA.md"), content)?;
 
-    ui::success(&format!("Created persona '{}' at {}", name, persona_dir.display()));
+    ui::success(&format!(
+        "Created persona '{}' at {}",
+        name,
+        persona_dir.display()
+    ));
     Ok(())
 }
 
@@ -932,7 +1053,8 @@ fn review(
     } else if use_gemini {
         llm::LlmCli::Gemini
     } else {
-        llm::detect().context("No LLM CLI found. Install codex, claude, opencode, gemini, or ollama.")?
+        llm::detect()
+            .context("No LLM CLI found. Install codex, claude, opencode, gemini, or ollama.")?
     };
 
     // Build prompt: custom prompt mode vs diff review mode
@@ -949,7 +1071,10 @@ fn review(
             ui::warn("No changes to review.");
             return Ok(());
         }
-        ui::info(&format!("Reviewing with {} using persona '{}'...", cli, name));
+        ui::info(&format!(
+            "Reviewing with {} using persona '{}'...",
+            cli, name
+        ));
         format!(
             "You are acting as the following persona:\n\n{}\n\n\
              Review the following code changes and provide feedback:\n\n\
@@ -1031,10 +1156,7 @@ fn find_persona_md(path: &Path) -> Result<PathBuf> {
             }
         }
     }
-    bail!(
-        "No PERSONA.md found in {}",
-        path.display()
-    );
+    bail!("No PERSONA.md found in {}", path.display());
 }
 
 fn installed_persona_names(dir: &Path) -> Vec<String> {
@@ -1071,7 +1193,10 @@ fn list_personas_in_dir(
                 let (role, domain, kind) = read_persona_info(&path);
                 (raw_name, role, domain, kind)
             } else if path.extension().is_some_and(|e| e == "md") {
-                let persona_name = raw_name.strip_suffix(".md").unwrap_or(&raw_name).to_string();
+                let persona_name = raw_name
+                    .strip_suffix(".md")
+                    .unwrap_or(&raw_name)
+                    .to_string();
                 let (role, domain, kind) = read_persona_info_from_file(&path);
                 (persona_name, role, domain, kind)
             } else {
@@ -1160,11 +1285,7 @@ fn get_diff(staged: bool, base: Option<&str>) -> Result<String> {
         .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
 }
 
-fn generate_persona(
-    name: &str,
-    desc: &str,
-    cli_override: Option<llm::LlmCli>,
-) -> Result<String> {
+fn generate_persona(name: &str, desc: &str, cli_override: Option<llm::LlmCli>) -> Result<String> {
     let cli = cli_override
         .or_else(llm::detect)
         .context("No LLM CLI found for persona generation")?;
@@ -1197,11 +1318,68 @@ fn default_persona_template(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_remote_persona_destination, post_persona_install, remove_all_persona_entries,
-        remove_persona_entry, replace_remote_persona_bytes_with, replace_remote_persona_path_with,
+        ensure_remote_persona_destination, install_all_from_library_with,
+        install_single_local_persona_link, install_single_local_persona_link_with,
+        post_persona_install, remove_all_persona_entries, remove_persona_entry,
+        replace_remote_persona_bytes_with, replace_remote_persona_path_with, uninstall_from_roots,
     };
     use anyhow::bail;
     use std::fs;
+
+    #[test]
+    fn forced_local_persona_install_replaces_existing_entry_with_link() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("source.md");
+        let destination = temp.path().join("installed");
+        fs::write(&source, "new persona").unwrap();
+        fs::write(&destination, "old persona").unwrap();
+
+        install_single_local_persona_link(&source, &destination, true, "installed").unwrap();
+
+        assert!(destination.is_symlink());
+        assert_eq!(fs::read_link(destination).unwrap(), source);
+    }
+
+    #[test]
+    fn forced_single_persona_propagates_candidate_failure_and_preserves_old_entry() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("source.md");
+        let destination = temp.path().join("installed");
+        fs::write(&source, "new persona").unwrap();
+        fs::write(&destination, "old persona").unwrap();
+
+        let error = install_single_local_persona_link_with(
+            &source,
+            &destination,
+            true,
+            "installed",
+            |_, _| bail!("injected candidate failure"),
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("injected candidate failure"));
+        assert_eq!(fs::read_to_string(destination).unwrap(), "old persona");
+    }
+
+    #[test]
+    fn forced_persona_all_propagates_activation_failure_and_preserves_old_entry() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let library = temp.path().join("library");
+        let target = temp.path().join("target");
+        fs::create_dir_all(&library).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(library.join("reviewer.md"), "new persona").unwrap();
+        let destination = target.join("reviewer");
+        fs::write(&destination, "old persona").unwrap();
+
+        let error = install_all_from_library_with(&library, &target, true, |_, _| {
+            bail!("injected activation failure")
+        })
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("injected activation failure"));
+        assert_eq!(fs::read_to_string(destination).unwrap(), "old persona");
+    }
 
     fn existing_persona(root: &std::path::Path) -> std::path::PathBuf {
         let destination = root.join("installed");
@@ -1331,6 +1509,69 @@ mod tests {
             fs::read_to_string(destination.join("PERSONA.md")).unwrap(),
             "old bytes"
         );
+    }
+
+    #[test]
+    fn local_uninstall_reports_global_match_without_mutating_it() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let local = temp.path().join("local/.agents/personas");
+        let global = temp.path().join("global/.agents/personas");
+        fs::create_dir_all(&global).unwrap();
+        let global_persona = global.join("reviewer.md");
+        fs::write(&global_persona, "global sentinel").unwrap();
+
+        let error = uninstall_from_roots("reviewer", false, &local, &global).unwrap_err();
+
+        assert!(error.to_string().contains("retry with --global"));
+        assert_eq!(
+            fs::read_to_string(global_persona).unwrap(),
+            "global sentinel"
+        );
+    }
+
+    #[test]
+    fn local_uninstall_removes_only_local_match_when_both_scopes_match() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let local = temp.path().join("local/.agents/personas");
+        let global = temp.path().join("global/.agents/personas");
+        fs::create_dir_all(&local).unwrap();
+        fs::create_dir_all(&global).unwrap();
+        let local_persona = local.join("reviewer.md");
+        let global_persona = global.join("reviewer.md");
+        fs::write(&local_persona, "local sentinel").unwrap();
+        fs::write(&global_persona, "global sentinel").unwrap();
+
+        assert_eq!(
+            uninstall_from_roots("reviewer", false, &local, &global).unwrap(),
+            "local"
+        );
+
+        assert!(!local_persona.exists());
+        assert_eq!(
+            fs::read_to_string(global_persona).unwrap(),
+            "global sentinel"
+        );
+    }
+
+    #[test]
+    fn global_uninstall_removes_only_global_match() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let local = temp.path().join("local/.agents/personas");
+        let global = temp.path().join("global/.agents/personas");
+        fs::create_dir_all(&local).unwrap();
+        fs::create_dir_all(&global).unwrap();
+        let local_persona = local.join("reviewer.md");
+        let global_persona = global.join("reviewer.md");
+        fs::write(&local_persona, "local sentinel").unwrap();
+        fs::write(&global_persona, "global sentinel").unwrap();
+
+        assert_eq!(
+            uninstall_from_roots("reviewer", true, &local, &global).unwrap(),
+            "global"
+        );
+
+        assert_eq!(fs::read_to_string(local_persona).unwrap(), "local sentinel");
+        assert!(!global_persona.exists());
     }
 
     #[cfg(unix)]

@@ -230,13 +230,7 @@ fn install(
         fs::create_dir_all(parent)?;
     }
 
-    util::ensure_target_clear(&link_path, force, &name)?;
-
-    symlink(&skill_path, &link_path).context(format!(
-        "Failed to create symlink: {} -> {}",
-        link_path.display(),
-        skill_path.display()
-    ))?;
+    install_single_local_skill_link(&skill_path, &link_path, force, &name)?;
 
     let scope = if global { "global" } else { "local" };
     ui::success(&format!(
@@ -244,6 +238,62 @@ fn install(
         group, name, scope, agent
     ));
     Ok(())
+}
+
+fn install_single_local_skill_link(
+    skill_path: &Path,
+    link_path: &Path,
+    force: bool,
+    display_name: &str,
+) -> Result<()> {
+    install_single_local_skill_link_with(
+        skill_path,
+        link_path,
+        force,
+        display_name,
+        |source, destination| util::replace_symlink_transactionally(source, destination),
+    )
+}
+
+fn install_single_local_skill_link_with<R>(
+    skill_path: &Path,
+    link_path: &Path,
+    force: bool,
+    display_name: &str,
+    mut replace: R,
+) -> Result<()>
+where
+    R: FnMut(&Path, &Path) -> Result<()>,
+{
+    if !force {
+        util::ensure_target_clear(link_path, false, display_name)?;
+    }
+    create_local_skill_link_with(skill_path, link_path, force, display_name, &mut replace)
+}
+
+fn create_local_skill_link_with<R>(
+    skill_path: &Path,
+    link_path: &Path,
+    force: bool,
+    display_name: &str,
+    replace: &mut R,
+) -> Result<()>
+where
+    R: FnMut(&Path, &Path) -> Result<()>,
+{
+    if force {
+        replace(skill_path, link_path)
+    } else {
+        symlink(skill_path, link_path).map_err(anyhow::Error::from)
+    }
+    .with_context(|| {
+        format!(
+            "Failed to create symlink for '{}': {} -> {}",
+            display_name,
+            link_path.display(),
+            skill_path.display()
+        )
+    })
 }
 
 fn install_remote(
@@ -471,7 +521,10 @@ fn install_remote_repo(
     let persona_dir = repo_root.join("personas");
     let has_personas = persona_dir.is_dir()
         && fs::read_dir(&persona_dir)
-            .map(|rd| rd.flatten().any(|e| !e.file_name().to_string_lossy().starts_with('.')))
+            .map(|rd| {
+                rd.flatten()
+                    .any(|e| !e.file_name().to_string_lossy().starts_with('.'))
+            })
             .unwrap_or(false);
 
     if all_skills.is_empty() {
@@ -516,7 +569,9 @@ fn install_remote_repo(
         let global_installed = installed_skill_names(&config::skill_target(true, agent));
 
         let selection = ui::interactive::run_interactive_selector_remote(
-            &repo_root, &local_installed, &global_installed,
+            &repo_root,
+            &local_installed,
+            &global_installed,
         )?;
 
         match selection {
@@ -567,8 +622,7 @@ fn install_remote_repo(
         }
 
         // Check cross-scope duplicate
-        if !force
-            && warn_cross_scope_duplicate(skill_name, group, global, &local_dir, &global_dir)
+        if !force && warn_cross_scope_duplicate(skill_name, group, global, &local_dir, &global_dir)
         {
             skipped += 1;
             continue;
@@ -688,10 +742,7 @@ where
 
         // If target is a symlink, user manages it — skip
         if target.is_symlink() {
-            ui::info(&format!(
-                "{} is a symlink, skipping",
-                rule.to
-            ));
+            ui::info(&format!("{} is a symlink, skipping", rule.to));
             continue;
         }
 
@@ -913,7 +964,11 @@ fn uninstall_group(
     }
 
     if console::Term::stderr().is_term() {
-        eprintln!("Will uninstall {} skills from group '{}':", skills.len(), group_name);
+        eprintln!(
+            "Will uninstall {} skills from group '{}':",
+            skills.len(),
+            group_name
+        );
         for s in &skills {
             eprintln!("  {}/{}", group_name, s);
         }
@@ -937,7 +992,10 @@ fn uninstall_group(
         } else {
             fs::remove_dir_all(&path)?;
         }
-        ui::success(&format!("Uninstalled skill '{}/{}' ({})", group_name, s, scope));
+        ui::success(&format!(
+            "Uninstalled skill '{}/{}' ({})",
+            group_name, s, scope
+        ));
     }
     let _ = fs::remove_dir(group_dir);
     Ok(())
@@ -963,9 +1021,9 @@ fn find_virtual_group_skills(target_dir: &Path, group_name: &str) -> Vec<PathBuf
                 fs::read_link(&path)
                     .ok()
                     .and_then(|target| {
-                        target.parent().and_then(|p| {
-                            p.file_name().map(|g| g.to_string_lossy().to_string())
-                        })
+                        target
+                            .parent()
+                            .and_then(|p| p.file_name().map(|g| g.to_string_lossy().to_string()))
                     })
                     .unwrap_or_else(|| "other".to_string())
             } else {
@@ -987,7 +1045,11 @@ fn uninstall_virtual_group(
     scope: &str,
 ) -> Result<()> {
     if console::Term::stderr().is_term() {
-        eprintln!("Will uninstall {} skills from '{}':", skills.len(), group_name);
+        eprintln!(
+            "Will uninstall {} skills from '{}':",
+            skills.len(),
+            group_name
+        );
         for s in skills {
             eprintln!("  {}", s.file_name().unwrap_or_default().to_string_lossy());
         }
@@ -1005,7 +1067,11 @@ fn uninstall_virtual_group(
 
     for path in skills {
         ensure_confined_removal(target_dir, path, false)?;
-        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         if path.is_symlink() || path.is_file() {
             fs::remove_file(path)?;
         } else {
@@ -1064,51 +1130,19 @@ fn install_profile(
         agent
     ));
 
-    let mut installed = 0;
-    let mut skipped = 0;
     let local_dir = config::skill_target(false, agent);
     let global_dir = config::skill_target(true, agent);
-
-    for (group, skill_name) in &resolved.skills {
-        let skill_path = source_dir.join(group).join(skill_name);
-        if !skill_path.is_dir() || !skill_path.join("SKILL.md").exists() {
-            ui::warn(&format!("Skill '{}/{}' not found, skipping", group, skill_name));
-            skipped += 1;
-            continue;
-        }
-
-        // Check cross-scope duplicate
-        if !force
-            && warn_cross_scope_duplicate(skill_name, group, global, &local_dir, &global_dir)
-        {
-            skipped += 1;
-            continue;
-        }
-
-        let link_path = config::skill_destination(&target_dir, group, skill_name, agent);
-        if let Some(parent) = link_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        if link_path.exists() || link_path.is_symlink() {
-            if force {
-                if link_path.is_symlink() || link_path.is_file() {
-                    fs::remove_file(&link_path)?;
-                } else {
-                    fs::remove_dir_all(&link_path)?;
-                }
-            } else {
-                skipped += 1;
-                continue;
-            }
-        }
-
-        symlink(&skill_path, &link_path).context(format!(
-            "Failed to create symlink for '{}/{}'",
-            group, skill_name
-        ))?;
-        installed += 1;
-    }
+    let (installed, skipped) = install_profile_entries_with(
+        &source_dir,
+        &resolved.skills,
+        &target_dir,
+        global,
+        agent,
+        force,
+        &local_dir,
+        &global_dir,
+        |source, destination| util::replace_symlink_transactionally(source, destination),
+    )?;
 
     ui::success(&format!(
         "Profile '{}': {} installed, {} skipped",
@@ -1122,6 +1156,63 @@ fn install_profile(
     }
 
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_profile_entries_with<R>(
+    source_dir: &Path,
+    skills: &[(String, String)],
+    target_dir: &Path,
+    global: bool,
+    agent: config::SkillAgent,
+    force: bool,
+    local_dir: &Path,
+    global_dir: &Path,
+    mut replace: R,
+) -> Result<(usize, usize)>
+where
+    R: FnMut(&Path, &Path) -> Result<()>,
+{
+    let mut installed = 0;
+    let mut skipped = 0;
+    for (group, skill_name) in skills {
+        let skill_path = source_dir.join(group).join(skill_name);
+        if !skill_path.is_dir() || !skill_path.join("SKILL.md").exists() {
+            ui::warn(&format!(
+                "Skill '{}/{}' not found, skipping",
+                group, skill_name
+            ));
+            skipped += 1;
+            continue;
+        }
+
+        // Check cross-scope duplicate
+        if !force && warn_cross_scope_duplicate(skill_name, group, global, &local_dir, &global_dir)
+        {
+            skipped += 1;
+            continue;
+        }
+
+        let link_path = config::skill_destination(&target_dir, group, skill_name, agent);
+        if let Some(parent) = link_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        if !force && (link_path.exists() || link_path.is_symlink()) {
+            skipped += 1;
+            continue;
+        }
+
+        create_local_skill_link_with(
+            &skill_path,
+            &link_path,
+            force,
+            &format!("{group}/{skill_name}"),
+            &mut replace,
+        )?;
+        installed += 1;
+    }
+    Ok((installed, skipped))
 }
 
 fn interactive_install(global: bool, agent: config::SkillAgent, force: bool) -> Result<()> {
@@ -1179,7 +1270,12 @@ fn clone_and_install(global: bool, agent: config::SkillAgent, force: bool) -> Re
     } else {
         ui::info("Cloning jiunbae/agent-skills...");
         let status = std::process::Command::new("git")
-            .args(["clone", "--depth", "1", "https://github.com/jiunbae/agent-skills.git"])
+            .args([
+                "clone",
+                "--depth",
+                "1",
+                "https://github.com/jiunbae/agent-skills.git",
+            ])
             .arg(&target)
             .status()
             .context("Failed to run git clone")?;
@@ -1277,23 +1373,58 @@ fn install_selected_skills(
     let target_dir = config::skill_target(global, agent);
     fs::create_dir_all(&target_dir)?;
 
-    let scope = if global { "global" } else { "local" };
     let local_dir = config::skill_target(false, agent);
     let global_dir = config::skill_target(true, agent);
+    let (installed, skipped) = install_selected_entries_with(
+        source_dir,
+        skills,
+        &target_dir,
+        global,
+        agent,
+        force,
+        &local_dir,
+        &global_dir,
+        |source, destination| util::replace_symlink_transactionally(source, destination),
+    )?;
+
+    ui::success(&format!(
+        "Done: {} installed, {} skipped",
+        installed, skipped
+    ));
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_selected_entries_with<R>(
+    source_dir: &Path,
+    skills: &[(String, String)],
+    target_dir: &Path,
+    global: bool,
+    agent: config::SkillAgent,
+    force: bool,
+    local_dir: &Path,
+    global_dir: &Path,
+    mut replace: R,
+) -> Result<(usize, usize)>
+where
+    R: FnMut(&Path, &Path) -> Result<()>,
+{
+    let scope = if global { "global" } else { "local" };
     let mut installed = 0;
     let mut skipped = 0;
-
     for (group, skill_name) in skills {
         let skill_path = source_dir.join(group).join(skill_name);
         if !skill_path.is_dir() || !skill_path.join("SKILL.md").exists() {
-            ui::warn(&format!("Skill '{}/{}' not found, skipping", group, skill_name));
+            ui::warn(&format!(
+                "Skill '{}/{}' not found, skipping",
+                group, skill_name
+            ));
             skipped += 1;
             continue;
         }
 
         // Check cross-scope duplicate
-        if !force
-            && warn_cross_scope_duplicate(skill_name, group, global, &local_dir, &global_dir)
+        if !force && warn_cross_scope_duplicate(skill_name, group, global, &local_dir, &global_dir)
         {
             skipped += 1;
             continue;
@@ -1304,23 +1435,18 @@ fn install_selected_skills(
             fs::create_dir_all(parent)?;
         }
 
-        if link_path.exists() || link_path.is_symlink() {
-            if force {
-                if link_path.is_symlink() || link_path.is_file() {
-                    fs::remove_file(&link_path)?;
-                } else {
-                    fs::remove_dir_all(&link_path)?;
-                }
-            } else {
-                skipped += 1;
-                continue;
-            }
+        if !force && (link_path.exists() || link_path.is_symlink()) {
+            skipped += 1;
+            continue;
         }
 
-        symlink(&skill_path, &link_path).context(format!(
-            "Failed to create symlink for '{}/{}'",
-            group, skill_name
-        ))?;
+        create_local_skill_link_with(
+            &skill_path,
+            &link_path,
+            force,
+            &format!("{group}/{skill_name}"),
+            &mut replace,
+        )?;
         ui::success(&format!(
             "Installed skill '{}/{}' ({}, {})",
             group, skill_name, scope, agent
@@ -1328,8 +1454,7 @@ fn install_selected_skills(
         installed += 1;
     }
 
-    ui::success(&format!("Done: {} installed, {} skipped", installed, skipped));
-    Ok(())
+    Ok((installed, skipped))
 }
 
 fn list(
@@ -1419,7 +1544,12 @@ fn list(
             total += skills.len();
             total_installed += group_installed;
 
-            ui::subsection(&format!("{}/ ({}/{})", group, group_installed, skills.len()));
+            ui::subsection(&format!(
+                "{}/ ({}/{})",
+                group,
+                group_installed,
+                skills.len()
+            ));
 
             let mut table = ui::table::new_table();
             for skill_name in &skills {
@@ -1432,18 +1562,20 @@ fn list(
                 };
                 let desc = read_skill_description(&source_dir.join(group).join(skill_name));
                 let desc_styled = desc.dimmed().to_string();
-                ui::table::add_row(&mut table, &[
-                    status.as_str(),
-                    skill_name,
-                    desc_styled.as_str(),
-                ]);
+                ui::table::add_row(
+                    &mut table,
+                    &[status.as_str(), skill_name, desc_styled.as_str()],
+                );
             }
             if !skills.is_empty() {
                 println!("{table}");
             }
         }
 
-        ui::info(&format!("Total: {} skills, {} installed", total, total_installed));
+        ui::info(&format!(
+            "Total: {} skills, {} installed",
+            total, total_installed
+        ));
     } else {
         // No source dir — infer groups from symlink targets
         list_skills_in_dir(&local_dir, "local", &mut entries)?;
@@ -1471,7 +1603,10 @@ fn list(
 fn init(agent: config::SkillAgent) -> Result<()> {
     let dir = config::skill_target(false, agent);
     if dir.exists() {
-        ui::info(&format!("Skill directory already exists: {}", dir.display()));
+        ui::info(&format!(
+            "Skill directory already exists: {}",
+            dir.display()
+        ));
         return Ok(());
     }
     fs::create_dir_all(&dir)?;
@@ -1710,7 +1845,10 @@ where
 fn read_directory_paths(directory: &Path) -> Result<Vec<PathBuf>> {
     let entries = fs::read_dir(directory)
         .with_context(|| format!("Failed to read directory {}", directory.display()))?;
-    collect_directory_paths(entries.map(|entry| entry.map(|entry| entry.path())), directory)
+    collect_directory_paths(
+        entries.map(|entry| entry.map(|entry| entry.path())),
+        directory,
+    )
 }
 
 fn has_remote_metadata(skill_path: &Path) -> Result<bool> {
@@ -1855,10 +1993,7 @@ fn find_installed_skill_for_update(target_dir: &Path, name: &str) -> Result<Opti
 
     for path in read_directory_paths(target_dir)? {
         validate_update_path(target_dir, &path)?;
-        let entry_name = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy();
+        let entry_name = path.file_name().unwrap_or_default().to_string_lossy();
         if entry_name.starts_with('.') {
             continue;
         }
@@ -2033,11 +2168,7 @@ fn installed_skill_names(dir: &Path) -> Vec<String> {
     names
 }
 
-fn list_skills_in_dir(
-    dir: &Path,
-    scope: &str,
-    entries: &mut Vec<serde_json::Value>,
-) -> Result<()> {
+fn list_skills_in_dir(dir: &Path, scope: &str, entries: &mut Vec<serde_json::Value>) -> Result<()> {
     if let Ok(read) = fs::read_dir(dir) {
         for entry in read.flatten() {
             let path = entry.path();
@@ -2227,10 +2358,12 @@ fn print_flat(entries: &[serde_json::Value]) {
 mod tests {
     use super::{
         collect_directory_paths, ensure_update_success, find_all_remote_skills,
-        find_update_targets, install_remote_skill_from_source_with, remote_skill_group,
-        run_manifest_setup, run_manifest_setup_with, skills_named, uninstall_from_target,
-        update_skill_batch, update_target_dir_exists, validate_skill_install_plan,
-        validate_uninstall_selector, validate_update_path, ManifestSource,
+        find_update_targets, install_profile_entries_with, install_remote_skill_from_source_with,
+        install_selected_entries_with, install_single_local_skill_link,
+        install_single_local_skill_link_with, remote_skill_group, run_manifest_setup,
+        run_manifest_setup_with, skills_named, uninstall_from_target, update_skill_batch,
+        update_target_dir_exists, validate_skill_install_plan, validate_uninstall_selector,
+        validate_update_path, ManifestSource,
     };
     use crate::config::SkillAgent;
     use anyhow::bail;
@@ -2238,6 +2371,104 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
     use std::path::PathBuf;
+
+    #[test]
+    fn forced_local_skill_install_replaces_existing_entry_with_link() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("installed");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(destination.join("sentinel"), "old bytes").unwrap();
+
+        install_single_local_skill_link(&source, &destination, true, "group/skill").unwrap();
+
+        assert!(destination.is_symlink());
+        assert_eq!(fs::read_link(destination).unwrap(), source);
+    }
+
+    fn local_skill_failure_fixture(
+        root: &std::path::Path,
+    ) -> (PathBuf, PathBuf, PathBuf, Vec<(String, String)>) {
+        let source = root.join("source");
+        let target = root.join("target");
+        let destination = target.join("group/skill");
+        fs::create_dir_all(source.join("group/skill")).unwrap();
+        fs::write(source.join("group/skill/SKILL.md"), "new bytes").unwrap();
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        fs::write(&destination, "old bytes").unwrap();
+        (
+            source,
+            target,
+            destination,
+            vec![("group".to_string(), "skill".to_string())],
+        )
+    }
+
+    #[test]
+    fn forced_single_skill_propagates_candidate_failure_and_preserves_old_entry() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("installed");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(&destination, "old bytes").unwrap();
+
+        let error = install_single_local_skill_link_with(
+            &source,
+            &destination,
+            true,
+            "group/skill",
+            |_, _| bail!("injected candidate failure"),
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("injected candidate failure"));
+        assert_eq!(fs::read_to_string(destination).unwrap(), "old bytes");
+    }
+
+    #[test]
+    fn forced_profile_propagates_candidate_failure_and_preserves_old_entry() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let (source, target, destination, skills) = local_skill_failure_fixture(temp.path());
+
+        let error = install_profile_entries_with(
+            &source,
+            &skills,
+            &target,
+            false,
+            SkillAgent::Claude,
+            true,
+            &temp.path().join("unused-local"),
+            &temp.path().join("unused-global"),
+            |_, _| bail!("injected candidate failure"),
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("injected candidate failure"));
+        assert_eq!(fs::read_to_string(destination).unwrap(), "old bytes");
+    }
+
+    #[test]
+    fn forced_selected_skills_propagates_activation_failure_and_preserves_old_entry() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let (source, target, destination, skills) = local_skill_failure_fixture(temp.path());
+
+        let error = install_selected_entries_with(
+            &source,
+            &skills,
+            &target,
+            false,
+            SkillAgent::Claude,
+            true,
+            &temp.path().join("unused-local"),
+            &temp.path().join("unused-global"),
+            |_, _| bail!("injected activation failure"),
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("injected activation failure"));
+        assert_eq!(fs::read_to_string(destination).unwrap(), "old bytes");
+    }
 
     #[test]
     fn remote_path_preserves_immediate_parent_as_group() {

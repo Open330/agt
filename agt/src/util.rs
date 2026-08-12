@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use std::fs;
+use std::os::unix::fs::symlink;
 use std::path::Path;
 
 /// Validate a skill/persona name to prevent path traversal and catch argument mistakes
@@ -42,6 +43,116 @@ pub fn ensure_target_clear(path: &Path, force: bool, entity_name: &str) -> Resul
         }
     }
     Ok(())
+}
+
+/// Create a replacement symlink before touching the live entry, then activate it with rollback.
+pub fn replace_symlink_transactionally(src: &Path, dst: &Path) -> Result<()> {
+    replace_symlink_transactionally_with(
+        src,
+        dst,
+        |target, candidate| symlink(target, candidate),
+        |from, to| fs::rename(from, to),
+    )
+}
+
+fn replace_symlink_transactionally_with<C, R>(
+    src: &Path,
+    dst: &Path,
+    create_candidate: C,
+    mut rename: R,
+) -> Result<()>
+where
+    C: FnOnce(&Path, &Path) -> std::io::Result<()>,
+    R: FnMut(&Path, &Path) -> std::io::Result<()>,
+{
+    let parent = dst
+        .parent()
+        .context("Symlink replacement destination has no parent directory")?;
+    let reserved_candidate = tempfile::Builder::new()
+        .prefix(".agt-link-candidate-")
+        .tempfile_in(parent)
+        .context("Failed to reserve a symlink replacement candidate")?;
+    let candidate = reserved_candidate.path().to_path_buf();
+    reserved_candidate
+        .close()
+        .context("Failed to prepare a symlink replacement candidate")?;
+
+    let result = (|| {
+        create_candidate(src, &candidate).with_context(|| {
+            format!(
+                "Failed to create symlink replacement candidate {} -> {}",
+                candidate.display(),
+                src.display()
+            )
+        })?;
+
+        let metadata = fs::symlink_metadata(&candidate).with_context(|| {
+            format!(
+                "Failed to validate symlink replacement candidate {}",
+                candidate.display()
+            )
+        })?;
+        if !metadata.file_type().is_symlink() || fs::read_link(&candidate)? != src {
+            bail!(
+                "Symlink replacement candidate failed validation: {}",
+                candidate.display()
+            );
+        }
+
+        if !dst.exists() && !dst.is_symlink() {
+            return rename(&candidate, dst).with_context(|| {
+                format!(
+                    "Failed to activate replacement symlink at {}",
+                    dst.display()
+                )
+            });
+        }
+
+        let recovery_root = tempfile::Builder::new()
+            .prefix(".agt-link-recovery-")
+            .tempdir_in(parent)
+            .context("Failed to create symlink replacement recovery directory")?;
+        let recovery_path = recovery_root.path().join("previous");
+
+        rename(dst, &recovery_path).with_context(|| {
+            format!(
+                "Failed to preserve existing entry before replacing {}",
+                dst.display()
+            )
+        })?;
+
+        if let Err(activation_error) = rename(&candidate, dst) {
+            return match rename(&recovery_path, dst) {
+                Ok(()) => Err(anyhow::anyhow!(activation_error)).with_context(|| {
+                    format!(
+                        "Failed to activate replacement symlink at {}; previous entry was restored",
+                        dst.display()
+                    )
+                }),
+                Err(rollback_error) => {
+                    let retained_root = recovery_root.keep();
+                    let retained_path = retained_root.join("previous");
+                    bail!(
+                        "Failed to activate replacement symlink at {}: {}; rollback failed: {}; previous entry retained at {}",
+                        dst.display(),
+                        activation_error,
+                        rollback_error,
+                        retained_path.display()
+                    )
+                }
+            };
+        }
+
+        drop(recovery_root);
+        Ok(())
+    })();
+
+    if candidate.is_symlink() || candidate.is_file() {
+        let _ = fs::remove_file(&candidate);
+    } else if candidate.is_dir() {
+        let _ = fs::remove_dir_all(&candidate);
+    }
+    result
 }
 
 /// Recursively copy a directory, skipping symlinks for safety
@@ -159,9 +270,155 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{activate_staged_dir_with, replace_dir_transactionally};
+    use super::{
+        activate_staged_dir_with, replace_dir_transactionally, replace_symlink_transactionally,
+        replace_symlink_transactionally_with,
+    };
     use anyhow::bail;
     use std::fs;
+
+    #[test]
+    fn forced_symlink_replacement_builds_candidate_before_touching_live_entry() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let old_target = temp.path().join("old-target");
+        let new_target = temp.path().join("new-target");
+        let destination = temp.path().join("installed");
+        fs::create_dir_all(&old_target).unwrap();
+        fs::create_dir_all(&new_target).unwrap();
+        std::os::unix::fs::symlink(&old_target, &destination).unwrap();
+
+        replace_symlink_transactionally_with(
+            &new_target,
+            &destination,
+            |target, candidate| {
+                assert_eq!(fs::read_link(&destination).unwrap(), old_target);
+                std::os::unix::fs::symlink(target, candidate)
+            },
+            |from, to| fs::rename(from, to),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read_link(destination).unwrap(), new_target);
+    }
+
+    #[test]
+    fn symlink_candidate_creation_failure_leaves_existing_entry_untouched() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("installed");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(&destination, "old bytes").unwrap();
+
+        let error = replace_symlink_transactionally_with(
+            &source,
+            &destination,
+            |_, _| Err(std::io::Error::other("injected candidate failure")),
+            |from, to| fs::rename(from, to),
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("injected candidate failure"));
+        assert_eq!(fs::read_to_string(destination).unwrap(), "old bytes");
+    }
+
+    #[test]
+    fn invalid_symlink_candidate_leaves_existing_entry_untouched() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("installed");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(destination.join("sentinel"), "old bytes").unwrap();
+
+        let error = replace_symlink_transactionally_with(
+            &source,
+            &destination,
+            |_, candidate| fs::write(candidate, "not a link"),
+            |from, to| fs::rename(from, to),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("failed validation"));
+        assert_eq!(
+            fs::read_to_string(destination.join("sentinel")).unwrap(),
+            "old bytes"
+        );
+    }
+
+    #[test]
+    fn symlink_activation_failure_restores_previous_entry() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("installed");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(&destination, "old bytes").unwrap();
+        let mut rename_count = 0;
+
+        let error = replace_symlink_transactionally_with(
+            &source,
+            &destination,
+            |target, candidate| std::os::unix::fs::symlink(target, candidate),
+            |from, to| {
+                rename_count += 1;
+                if rename_count == 2 {
+                    Err(std::io::Error::other("injected activation failure"))
+                } else {
+                    fs::rename(from, to)
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("previous entry was restored"));
+        assert_eq!(fs::read_to_string(destination).unwrap(), "old bytes");
+    }
+
+    #[test]
+    fn symlink_rollback_failure_reports_and_retains_exact_recovery_path() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("installed");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(&destination, "old bytes").unwrap();
+        let mut rename_count = 0;
+
+        let error = replace_symlink_transactionally_with(
+            &source,
+            &destination,
+            |target, candidate| std::os::unix::fs::symlink(target, candidate),
+            |from, to| {
+                rename_count += 1;
+                if rename_count >= 2 {
+                    Err(std::io::Error::other("injected rename failure"))
+                } else {
+                    fs::rename(from, to)
+                }
+            },
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        let retained = message
+            .split("previous entry retained at ")
+            .nth(1)
+            .map(std::path::PathBuf::from)
+            .unwrap();
+
+        assert_eq!(fs::read_to_string(&retained).unwrap(), "old bytes");
+        assert!(retained.starts_with(temp.path()));
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn forced_symlink_replacement_activates_when_destination_is_absent() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("installed");
+        fs::create_dir_all(&source).unwrap();
+
+        replace_symlink_transactionally(&source, &destination).unwrap();
+
+        assert_eq!(fs::read_link(destination).unwrap(), source);
+    }
 
     #[test]
     fn copy_staging_failure_leaves_existing_directory_untouched() {
