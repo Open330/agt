@@ -426,22 +426,19 @@ fn install_remote(spec_str: &str, global: bool, force: bool) -> Result<()> {
     fs::create_dir_all(&target_dir)?;
     let dest = target_dir.join(&persona_name);
 
-    util::ensure_target_clear(&dest, force, &persona_name)?;
+    ensure_remote_persona_destination(&dest, force, &persona_name)?;
 
     // Try fetching as a directory (tarball)
     match remote::fetch_dir(&spec) {
         Ok((_tmp_dir, source_path)) => {
-            util::copy_dir_recursive(&source_path, &dest)?;
-            remote::write_metadata(&dest, &spec)?;
+            replace_remote_persona_path(&source_path, &dest, &spec)?;
         }
         Err(_) => {
             // Fallback: try single PERSONA.md file
             let data = remote::fetch_file(&file_spec)
                 .context(format!("Failed to download persona '{}'", persona_name))?;
 
-            fs::create_dir_all(&dest)?;
-            fs::write(dest.join("PERSONA.md"), &data)?;
-            remote::write_metadata(&dest, &spec)?;
+            replace_remote_persona_bytes(&data, &dest, &spec)?;
         }
     }
 
@@ -452,6 +449,52 @@ fn install_remote(spec_str: &str, global: bool, force: bool) -> Result<()> {
     ));
     post_persona_install();
     Ok(())
+}
+
+fn ensure_remote_persona_destination(dest: &Path, force: bool, persona_name: &str) -> Result<()> {
+    // A forced remote refresh keeps the live persona in place until its replacement,
+    // including metadata, has been staged successfully.
+    if force {
+        Ok(())
+    } else {
+        util::ensure_target_clear(dest, false, persona_name)
+    }
+}
+
+fn replace_remote_persona_path(
+    source: &Path,
+    dest: &Path,
+    spec: &remote::RemoteSpec,
+) -> Result<()> {
+    replace_remote_persona_path_with(source, dest, |staged| remote::write_metadata(staged, spec))
+}
+
+fn replace_remote_persona_path_with<F>(source: &Path, dest: &Path, prepare: F) -> Result<()>
+where
+    F: FnOnce(&Path) -> Result<()>,
+{
+    if source.is_dir() {
+        return util::replace_dir_transactionally(source, dest, prepare);
+    }
+
+    let source_root = tempfile::TempDir::new().context("Failed to stage remote persona file")?;
+    fs::copy(source, source_root.path().join("PERSONA.md"))
+        .context("Failed to stage remote persona file")?;
+    util::replace_dir_transactionally(source_root.path(), dest, prepare)
+}
+
+fn replace_remote_persona_bytes(data: &[u8], dest: &Path, spec: &remote::RemoteSpec) -> Result<()> {
+    replace_remote_persona_bytes_with(data, dest, |staged| remote::write_metadata(staged, spec))
+}
+
+fn replace_remote_persona_bytes_with<F>(data: &[u8], dest: &Path, prepare: F) -> Result<()>
+where
+    F: FnOnce(&Path) -> Result<()>,
+{
+    let source_root = tempfile::TempDir::new().context("Failed to stage remote persona file")?;
+    fs::write(source_root.path().join("PERSONA.md"), data)
+        .context("Failed to stage remote persona file")?;
+    util::replace_dir_transactionally(source_root.path(), dest, prepare)
 }
 
 fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> Result<()> {
@@ -543,23 +586,10 @@ fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> 
         let dest = target_dir.join(name);
 
         if dest.exists() || dest.is_symlink() {
-            if force {
-                if dest.is_symlink() || dest.is_file() {
-                    fs::remove_file(&dest)?;
-                } else {
-                    fs::remove_dir_all(&dest)?;
-                }
-            } else {
+            if !force {
                 skipped += 1;
                 continue;
             }
-        }
-
-        if path.is_dir() {
-            util::copy_dir_recursive(path, &dest)?;
-        } else {
-            fs::create_dir_all(&dest)?;
-            fs::copy(path, dest.join("PERSONA.md"))?;
         }
 
         let persona_spec = remote::RemoteSpec {
@@ -568,7 +598,7 @@ fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> 
             path: format!("personas/{}", raw_name),
             git_ref: spec.git_ref.clone(),
         };
-        remote::write_metadata(&dest, &persona_spec)?;
+        replace_remote_persona_path(path, &dest, &persona_spec)?;
         ui::success(&format!("Installed persona '{}' ({})", name, scope));
         installed += 1;
     }
@@ -1160,4 +1190,144 @@ fn default_persona_template(name: &str) -> String {
          # {}\n\nReview code for correctness, readability, and best practices.\n",
         name, name
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ensure_remote_persona_destination, replace_remote_persona_bytes_with,
+        replace_remote_persona_path_with,
+    };
+    use anyhow::bail;
+    use std::fs;
+
+    fn existing_persona(root: &std::path::Path) -> std::path::PathBuf {
+        let destination = root.join("installed");
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(destination.join("PERSONA.md"), "old bytes").unwrap();
+        fs::write(destination.join(".remote-source"), "old metadata").unwrap();
+        destination
+    }
+
+    #[test]
+    fn direct_remote_force_activates_content_and_metadata_together() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let destination = existing_persona(temp.path());
+
+        replace_remote_persona_bytes_with(b"new bytes", &destination, |staged| {
+            assert_eq!(
+                fs::read_to_string(staged.join("PERSONA.md")).unwrap(),
+                "new bytes"
+            );
+            assert_eq!(
+                fs::read_to_string(destination.join("PERSONA.md")).unwrap(),
+                "old bytes"
+            );
+            fs::write(staged.join(".remote-source"), "new metadata")?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(destination.join("PERSONA.md")).unwrap(),
+            "new bytes"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join(".remote-source")).unwrap(),
+            "new metadata"
+        );
+    }
+
+    #[test]
+    fn direct_remote_prepare_failure_preserves_existing_persona() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let destination = existing_persona(temp.path());
+
+        let error = replace_remote_persona_bytes_with(b"new bytes", &destination, |_| {
+            bail!("injected metadata failure")
+        })
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("injected metadata failure"));
+        assert_eq!(
+            fs::read_to_string(destination.join("PERSONA.md")).unwrap(),
+            "old bytes"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join(".remote-source")).unwrap(),
+            "old metadata"
+        );
+    }
+
+    #[test]
+    fn repo_remote_force_activates_content_and_metadata_together() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("repo-persona");
+        let destination = existing_persona(temp.path());
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("PERSONA.md"), "repo bytes").unwrap();
+
+        replace_remote_persona_path_with(&source, &destination, |staged| {
+            assert_eq!(
+                fs::read_to_string(staged.join("PERSONA.md")).unwrap(),
+                "repo bytes"
+            );
+            assert_eq!(
+                fs::read_to_string(destination.join("PERSONA.md")).unwrap(),
+                "old bytes"
+            );
+            fs::write(staged.join(".remote-source"), "repo metadata")?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(destination.join("PERSONA.md")).unwrap(),
+            "repo bytes"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join(".remote-source")).unwrap(),
+            "repo metadata"
+        );
+    }
+
+    #[test]
+    fn repo_remote_copy_failure_preserves_existing_persona() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let missing_source = temp.path().join("missing-persona.md");
+        let destination = existing_persona(temp.path());
+
+        let error = replace_remote_persona_path_with(&missing_source, &destination, |_| Ok(()))
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("Failed to stage remote persona file"));
+        assert_eq!(
+            fs::read_to_string(destination.join("PERSONA.md")).unwrap(),
+            "old bytes"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join(".remote-source")).unwrap(),
+            "old metadata"
+        );
+    }
+
+    #[test]
+    fn direct_remote_no_force_conflict_is_unchanged() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let destination = existing_persona(temp.path());
+
+        let error =
+            ensure_remote_persona_destination(&destination, false, "installed").unwrap_err();
+
+        assert!(format!("{error:#}").contains("Use --force to overwrite"));
+        assert_eq!(
+            fs::read_to_string(destination.join("PERSONA.md")).unwrap(),
+            "old bytes"
+        );
+        ensure_remote_persona_destination(&destination, true, "installed").unwrap();
+        assert_eq!(
+            fs::read_to_string(destination.join("PERSONA.md")).unwrap(),
+            "old bytes"
+        );
+    }
 }
