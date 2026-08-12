@@ -166,17 +166,22 @@ fn list(json_output: bool) -> Result<()> {
             HookType::Agent => "agent".cyan().to_string(),
         };
         let event_text = if let Some(ref m) = def.matcher {
-            format!("{} (matcher: {})", def.event, m).dimmed().to_string()
+            format!("{} (matcher: {})", def.event, m)
+                .dimmed()
+                .to_string()
         } else {
             def.event.dimmed().to_string()
         };
-        ui::table::add_row(&mut table, &[
-            icon.as_str(),
-            type_badge.as_str(),
-            name,
-            event_text.as_str(),
-            &def.description,
-        ]);
+        ui::table::add_row(
+            &mut table,
+            &[
+                icon.as_str(),
+                type_badge.as_str(),
+                name,
+                event_text.as_str(),
+                &def.description,
+            ],
+        );
     }
     println!("{table}");
     Ok(())
@@ -431,17 +436,17 @@ fn serve(port: u16) -> Result<()> {
         );
     }
 
-    ui::info(&format!(
-        "Starting HTTP hook server on port {}...",
-        port
-    ));
+    ui::info(&format!("Starting HTTP hook server on port {}...", port));
     ui::info(&format!("Server: {}", server_script.display()));
     eprintln!();
 
     // Try bun first, then deno, then npx tsx
     let runners: Vec<(&str, Vec<&str>)> = vec![
         ("bun", vec!["run"]),
-        ("deno", vec!["run", "--allow-net", "--allow-read", "--allow-env"]),
+        (
+            "deno",
+            vec!["run", "--allow-net", "--allow-read", "--allow-env"],
+        ),
         ("npx", vec!["tsx"]),
     ];
 
@@ -453,10 +458,7 @@ fn serve(port: u16) -> Result<()> {
             let status = std::process::Command::new(runner)
                 .args(&cmd_args)
                 .env("AGT_HOOK_PORT", port.to_string())
-                .env(
-                    "AGT_HOOKS_DIR",
-                    hooks_source.to_str().unwrap_or_default(),
-                )
+                .env("AGT_HOOKS_DIR", hooks_source.to_str().unwrap_or_default())
                 .status()
                 .with_context(|| format!("Failed to start {} server", runner))?;
 
@@ -711,6 +713,43 @@ fn validate_command_destination(
     Ok((destination, exists))
 }
 
+fn validate_existing_command_link(source: &CommandSource, destination: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(destination).with_context(|| {
+        format!(
+            "Cannot inspect existing destination for command hook '{}': {}",
+            source.command.hook_name,
+            destination.display()
+        )
+    })?;
+    if !metadata.file_type().is_symlink() {
+        bail!(
+            "Unsafe command hook '{}' destination '{}': expected the managed symlink to {} (use -f to replace it)",
+            source.command.hook_name,
+            destination.display(),
+            source.canonical_source.display()
+        );
+    }
+
+    let canonical_destination = destination.canonicalize().with_context(|| {
+        format!(
+            "Unsafe command hook '{}' destination '{}': cannot resolve the existing symlink to {}",
+            source.command.hook_name,
+            destination.display(),
+            source.canonical_source.display()
+        )
+    })?;
+    if canonical_destination != source.canonical_source {
+        bail!(
+            "Unsafe command hook '{}' destination '{}': existing symlink resolves to {}, expected {} (use -f to replace it)",
+            source.command.hook_name,
+            destination.display(),
+            canonical_destination.display(),
+            source.canonical_source.display()
+        );
+    }
+    Ok(())
+}
+
 fn install_command_scripts(
     sources: &[CommandSource],
     hooks_target: &Path,
@@ -733,7 +772,12 @@ fn install_command_scripts(
     let destinations = sources
         .iter()
         .map(|source| {
-            validate_command_destination(&source.command, hooks_target, &canonical_target)
+            let (destination, exists) =
+                validate_command_destination(&source.command, hooks_target, &canonical_target)?;
+            if exists && !force {
+                validate_existing_command_link(source, &destination)?;
+            }
+            Ok((destination, exists))
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -975,14 +1019,8 @@ fn validate_hook_settings_shape(settings: &serde_json::Value, settings_path: &Pa
 }
 
 fn write_hook_settings(settings_path: &Path, settings: &serde_json::Value) -> Result<()> {
-    if let Some(parent) = settings_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Cannot create {}", parent.display()))?;
-    }
-    let content = serde_json::to_string_pretty(settings)?;
-    fs::write(settings_path, content)
-        .with_context(|| format!("Cannot write Claude settings: {}", settings_path.display()))?;
-    Ok(())
+    config::write_json_atomically(settings_path, settings)
+        .with_context(|| format!("Cannot write Claude settings: {}", settings_path.display()))
 }
 
 fn merge_hooks_into_settings(
@@ -1474,7 +1512,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_command_destination_is_preserved_and_registration_count_is_exact() {
+    fn existing_command_file_fails_before_registration_mutation() {
         let temp = tempfile::TempDir::new().unwrap();
         let hooks_source = temp.path().join("source");
         let hooks_target = temp.path().join("target");
@@ -1499,25 +1537,141 @@ mod tests {
         }));
         let hooks: Vec<_> = registry.iter().collect();
 
-        assert_eq!(
-            install_selected_hooks(&settings_path, &hooks_source, &hooks_target, &hooks, false,)
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            install_selected_hooks(&settings_path, &hooks_source, &hooks_target, &hooks, false,)
-                .unwrap(),
-            0
-        );
+        let error =
+            install_selected_hooks(&settings_path, &hooks_source, &hooks_target, &hooks, false)
+                .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("command-hook"), "{message}");
+        assert!(message.contains("managed symlink"), "{message}");
         assert_eq!(
             fs::read_to_string(destination).unwrap(),
             "existing destination"
         );
+        assert_eq!(
+            fs::read_to_string(settings_path).unwrap(),
+            r#"{"unrelated":{"keep":true},"hooks":{"OtherEvent":[]}}"#
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_managed_command_link_is_registered_once() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let hooks_source = temp.path().join("source");
+        let hooks_target = temp.path().join("target");
+        let settings_path = temp.path().join("settings.json");
+        fs::create_dir(&hooks_source).unwrap();
+        fs::create_dir(&hooks_target).unwrap();
+        let source = hooks_source.join("check.sh");
+        fs::write(&source, "#!/bin/sh\n").unwrap();
+        let canonical_source = source.canonicalize().unwrap();
+        let destination = hooks_target.join("check.sh");
+        std::os::unix::fs::symlink(&canonical_source, &destination).unwrap();
+        fs::write(&settings_path, r#"{"unrelated":{"keep":true}}"#).unwrap();
+        let registry = parse_registry(serde_json::json!({
+            "command-hook": {
+                "description": "command",
+                "event": "PreToolUse",
+                "type": "command",
+                "script": "check.sh"
+            }
+        }));
+        let hooks: Vec<_> = registry.iter().collect();
+
+        assert_eq!(
+            install_selected_hooks(&settings_path, &hooks_source, &hooks_target, &hooks, false)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            install_selected_hooks(&settings_path, &hooks_source, &hooks_target, &hooks, false)
+                .unwrap(),
+            0
+        );
+        assert_eq!(fs::read_link(destination).unwrap(), canonical_source);
         let settings: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(settings_path).unwrap()).unwrap();
         assert_eq!(settings["unrelated"], serde_json::json!({ "keep": true }));
-        assert_eq!(settings["hooks"]["OtherEvent"], serde_json::json!([]));
         assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_wrong_command_link_fails_before_registration_mutation() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let hooks_source = temp.path().join("source");
+        let hooks_target = temp.path().join("target");
+        let settings_path = temp.path().join("settings.json");
+        fs::create_dir(&hooks_source).unwrap();
+        fs::create_dir(&hooks_target).unwrap();
+        fs::write(hooks_source.join("check.sh"), "#!/bin/sh\n").unwrap();
+        let wrong_source = hooks_source.join("wrong.sh");
+        fs::write(&wrong_source, "#!/bin/sh\n").unwrap();
+        let destination = hooks_target.join("check.sh");
+        std::os::unix::fs::symlink(wrong_source.canonicalize().unwrap(), &destination).unwrap();
+        let original_settings = r#"{"unrelated":{"keep":true}}"#;
+        fs::write(&settings_path, original_settings).unwrap();
+        let registry = parse_registry(serde_json::json!({
+            "command-hook": {
+                "description": "command",
+                "event": "PreToolUse",
+                "type": "command",
+                "script": "check.sh"
+            }
+        }));
+        let hooks: Vec<_> = registry.iter().collect();
+
+        let error =
+            install_selected_hooks(&settings_path, &hooks_source, &hooks_target, &hooks, false)
+                .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("resolves to"), "{message}");
+        assert!(message.contains("expected"), "{message}");
+        assert_eq!(
+            fs::read_to_string(settings_path).unwrap(),
+            original_settings
+        );
+        assert_eq!(
+            destination.canonicalize().unwrap(),
+            wrong_source.canonicalize().unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_dangling_command_link_fails_before_registration_mutation() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let hooks_source = temp.path().join("source");
+        let hooks_target = temp.path().join("target");
+        let settings_path = temp.path().join("settings.json");
+        fs::create_dir(&hooks_source).unwrap();
+        fs::create_dir(&hooks_target).unwrap();
+        fs::write(hooks_source.join("check.sh"), "#!/bin/sh\n").unwrap();
+        let missing_source = hooks_source.join("missing.sh");
+        let destination = hooks_target.join("check.sh");
+        std::os::unix::fs::symlink(&missing_source, &destination).unwrap();
+        let original_settings = r#"{"unrelated":{"keep":true}}"#;
+        fs::write(&settings_path, original_settings).unwrap();
+        let registry = parse_registry(serde_json::json!({
+            "command-hook": {
+                "description": "command",
+                "event": "PreToolUse",
+                "type": "command",
+                "script": "check.sh"
+            }
+        }));
+        let hooks: Vec<_> = registry.iter().collect();
+
+        let error =
+            install_selected_hooks(&settings_path, &hooks_source, &hooks_target, &hooks, false)
+                .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("cannot resolve"), "{message}");
+        assert_eq!(
+            fs::read_to_string(settings_path).unwrap(),
+            original_settings
+        );
+        assert_eq!(fs::read_link(destination).unwrap(), missing_source);
     }
 
     #[cfg(unix)]

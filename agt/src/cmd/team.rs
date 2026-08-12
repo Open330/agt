@@ -1,4 +1,4 @@
-use crate::{config, ui};
+use crate::{config, ui, util};
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use colored::Colorize;
@@ -6,6 +6,7 @@ use comfy_table::Cell;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Subcommand)]
@@ -473,9 +474,6 @@ fn status() -> Result<()> {
 // ── Init ──────────────────────────────────────────────────────────
 
 fn init(from: Option<String>) -> Result<()> {
-    let project_teams_dir = PathBuf::from(".claude/teams");
-    fs::create_dir_all(&project_teams_dir)?;
-
     let template = if let Some(ref name) = from {
         load_template(name)?
     } else {
@@ -513,23 +511,46 @@ fn init(from: Option<String>) -> Result<()> {
         }
     };
 
-    let filename = format!("{}.yml", template.name);
-    let target = project_teams_dir.join(&filename);
-
-    if target.exists() {
-        bail!(
-            "Team template already exists: {}\nEdit it directly or remove first.",
-            target.display()
-        );
-    }
-
-    let yaml = serde_yaml::to_string(&template)?;
-    fs::write(&target, yaml)?;
+    let target = write_project_team_template(Path::new("."), &template)?;
 
     ui::success(&format!("Created team template: {}", target.display()));
     ui::info("Edit the file to customize teammates, tasks, and hooks.");
     ui::info(&format!("Then run: agt team create {}", template.name));
     Ok(())
+}
+
+fn write_project_team_template(project_root: &Path, template: &TeamTemplate) -> Result<PathBuf> {
+    validate_team_template_name(&template.name)?;
+
+    ensure_existing_directory_is_not_symlink(project_root, "project root")?;
+    let claude_dir = project_root.join(".claude");
+    ensure_directory_component(&claude_dir, ".claude directory")?;
+    let project_teams_dir = claude_dir.join("teams");
+    ensure_directory_component(&project_teams_dir, "project team template directory")?;
+
+    let filename = format!("{}.yml", template.name);
+    let target = project_teams_dir.join(&filename);
+
+    let yaml = serde_yaml::to_string(&template)?;
+    let mut file = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => bail!(
+            "Team template already exists: {}\nEdit it directly or remove first.",
+            target.display()
+        ),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Cannot create team template {}", target.display()))
+        }
+    };
+    file.write_all(yaml.as_bytes())
+        .with_context(|| format!("Cannot write team template {}", target.display()))?;
+
+    Ok(target)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -590,11 +611,62 @@ fn load_templates_from_dir(
             };
             let template = serde_yaml::from_str::<TeamTemplate>(&content)
                 .with_context(|| format!("Invalid team template YAML: {}", path.display()))?;
+            validate_team_template_name(&template.name).with_context(|| {
+                format!(
+                    "Invalid team template name in {}: {:?}",
+                    path.display(),
+                    template.name
+                )
+            })?;
             templates.insert(template.name.clone(), template);
         }
     }
 
     Ok(())
+}
+
+fn validate_team_template_name(name: &str) -> Result<()> {
+    util::validate_name(name).context("Invalid team template name")?;
+
+    let mut components = Path::new(name).components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(component)), None) if component == name => Ok(()),
+        _ => bail!(
+            "Invalid team template name {:?}: expected one safe path component",
+            name
+        ),
+    }
+}
+
+fn ensure_existing_directory_is_not_symlink(path: &Path, description: &str) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("Cannot inspect {}: {}", description, path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!(
+            "Unsafe {} {}: expected a non-symlinked directory",
+            description,
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn ensure_directory_component(path: &Path, description: &str) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => bail!(
+            "Unsafe {} {}: expected a non-symlinked directory",
+            description,
+            path.display()
+        ),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(path)
+                .with_context(|| format!("Cannot create {}: {}", description, path.display()))?;
+            ensure_existing_directory_is_not_symlink(path, description)
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("Cannot inspect {}: {}", description, path.display())),
+    }
 }
 
 fn load_template(name: &str) -> Result<TeamTemplate> {
@@ -679,14 +751,8 @@ fn validate_team_settings_shape(settings: &serde_json::Value, settings_path: &Pa
 }
 
 fn write_team_settings(settings_path: &Path, settings: &serde_json::Value) -> Result<()> {
-    if let Some(parent) = settings_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Cannot create {}", parent.display()))?;
-    }
-    let content = serde_json::to_string_pretty(settings)?;
-    fs::write(settings_path, content)
-        .with_context(|| format!("Cannot write Claude settings: {}", settings_path.display()))?;
-    Ok(())
+    config::write_json_atomically(settings_path, settings)
+        .with_context(|| format!("Cannot write Claude settings: {}", settings_path.display()))
 }
 
 #[cfg(test)]
@@ -788,5 +854,101 @@ mod tests {
         assert_eq!(disabled["theme"], "dark");
         assert_eq!(disabled["teammateMode"], "tmux");
         assert_eq!(disabled["env"], serde_json::json!({ "KEEP": "yes" }));
+    }
+
+    #[test]
+    fn template_names_must_be_safe_single_components() {
+        for unsafe_name in ["", "..", "../escape", "/tmp/escape", r"..\escape"] {
+            let error = validate_team_template_name(unsafe_name).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("Invalid team template name"),
+                "unexpected error for {unsafe_name:?}: {error:#}"
+            );
+        }
+
+        validate_team_template_name("safe-team_1").unwrap();
+    }
+
+    #[test]
+    fn loaded_template_with_unsafe_name_is_rejected_before_insertion() {
+        let temp = tempfile::TempDir::new().unwrap();
+        fs::write(
+            temp.path().join("escape.yml"),
+            "name: ../escape\ndescription: unsafe\n",
+        )
+        .unwrap();
+
+        let mut templates = BTreeMap::new();
+        let error = load_templates_from_dir(temp.path(), &mut templates).unwrap_err();
+        assert!(format!("{error:#}").contains("Invalid team template name"));
+        assert!(templates.is_empty());
+    }
+
+    #[test]
+    fn project_team_template_is_an_immediate_child_and_does_not_clobber() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let valid = template("review-team", "valid");
+
+        let target = write_project_team_template(temp.path(), &valid).unwrap();
+        assert_eq!(target, temp.path().join(".claude/teams/review-team.yml"));
+        let original = fs::read_to_string(&target).unwrap();
+
+        let error = write_project_team_template(temp.path(), &valid).unwrap_err();
+        assert!(format!("{error:#}").contains("already exists"));
+        assert_eq!(fs::read_to_string(target).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_team_template_rejects_symlinked_root_and_intermediates() {
+        use std::os::unix::fs::symlink;
+
+        for linked_component in ["root", ".claude", "teams"] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let outside = temp.path().join("outside");
+            fs::create_dir(&outside).unwrap();
+            let sentinel = outside.join("sentinel");
+            fs::write(&sentinel, "unchanged").unwrap();
+
+            let project = temp.path().join("project");
+            fs::create_dir(&project).unwrap();
+            let root = if linked_component == "root" {
+                let linked_root = temp.path().join("linked-project");
+                symlink(&outside, &linked_root).unwrap();
+                linked_root
+            } else {
+                let claude = project.join(".claude");
+                if linked_component == ".claude" {
+                    symlink(&outside, &claude).unwrap();
+                } else {
+                    fs::create_dir(&claude).unwrap();
+                    symlink(&outside, claude.join("teams")).unwrap();
+                }
+                project
+            };
+
+            let error = write_project_team_template(&root, &template("safe", "valid")).unwrap_err();
+            assert!(format!("{error:#}").contains("non-symlinked directory"));
+            assert_eq!(fs::read_to_string(&sentinel).unwrap(), "unchanged");
+            assert!(!outside.join("safe.yml").exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_team_template_rejects_symlinked_final_without_touching_outside() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let teams = temp.path().join(".claude/teams");
+        fs::create_dir_all(&teams).unwrap();
+        let sentinel = temp.path().join("outside.yml");
+        fs::write(&sentinel, "unchanged").unwrap();
+        symlink(&sentinel, teams.join("safe.yml")).unwrap();
+
+        let error =
+            write_project_team_template(temp.path(), &template("safe", "valid")).unwrap_err();
+        assert!(format!("{error:#}").contains("already exists"));
+        assert_eq!(fs::read_to_string(sentinel).unwrap(), "unchanged");
     }
 }
