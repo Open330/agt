@@ -36,26 +36,7 @@ fn is_static_index_installed() -> bool {
         || codex_global_flat.is_symlink()
 }
 
-/// Refresh the static-index after persona changes
-fn refresh_static_index() {
-    if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
-        let script = source_dir
-            .join("context")
-            .join("static-index")
-            .join("scripts")
-            .join("static-index.sh");
-        if script.exists() {
-            let script_str = script.to_string_lossy().to_string();
-            let _ = std::process::Command::new("bash")
-                .args([&script_str, "refresh"])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-        }
-    }
-}
-
-/// Suggest installing static-index skill if not present, with optional interactive prompt
+/// Suggest installing static-index skill if not present.
 fn suggest_static_index() {
     if is_static_index_installed() {
         return;
@@ -66,40 +47,10 @@ fn suggest_static_index() {
          Claude uses it to discover persona locations.",
     );
     ui::hint("Install it with: agt skill install static-index --global");
-
-    // Interactive prompt if TTY
-    if console::Term::stderr().is_term() {
-        let confirmed = dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
-            .with_prompt("Install static-index skill now?")
-            .default(true)
-            .interact()
-            .unwrap_or(false);
-
-        if confirmed {
-            if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
-                let skill_path = source_dir.join("context").join("static-index");
-                if skill_path.is_dir() && skill_path.join("SKILL.md").exists() {
-                    let target = config::global_skill_target().join("context");
-                    let _ = fs::create_dir_all(&target);
-                    let link_path = target.join("static-index");
-                    if !link_path.exists() && !link_path.is_symlink() {
-                        if symlink(&skill_path, &link_path).is_ok() {
-                            ui::success("Installed skill 'context/static-index' (global)");
-                        }
-                    }
-                } else {
-                    ui::warn("static-index skill not found in source library");
-                }
-            } else {
-                ui::warn(&format!("Source directory not found. {}", config::source_dir_hint()));
-            }
-        }
-    }
 }
 
-/// Post-install actions: refresh index and suggest static-index
+/// Post-install action: suggest static-index without executing source-tree scripts.
 fn post_persona_install() {
-    refresh_static_index();
     suggest_static_index();
 }
 
@@ -617,14 +568,18 @@ fn uninstall(name: &str, global: bool) -> Result<()> {
     util::validate_name(name)?;
     // Try to find the persona: check dir, .md file, in both local and global
     let (path, scope) = if global {
-        (find_installed_persona(name, &config::global_persona_target()), "global")
+        (
+            find_installed_persona_for_removal(name, &config::global_persona_target())?,
+            "global",
+        )
     } else {
         // Try local first, then auto-detect global
-        let local = find_installed_persona(name, &config::local_persona_target());
+        let local = find_installed_persona_for_removal(name, &config::local_persona_target())?;
         if local.is_some() {
             (local, "local")
         } else {
-            let global_found = find_installed_persona(name, &config::global_persona_target());
+            let global_found =
+                find_installed_persona_for_removal(name, &config::global_persona_target())?;
             if global_found.is_some() {
                 (global_found, "global")
             } else {
@@ -634,12 +589,10 @@ fn uninstall(name: &str, global: bool) -> Result<()> {
     };
 
     let path = path.context(format!("Persona '{}' is not installed", name))?;
-
-    if path.is_symlink() || path.is_file() {
-        fs::remove_file(&path)?;
-    } else {
-        fs::remove_dir_all(&path)?;
-    }
+    remove_persona_entry(
+        path.parent().context("Persona path has no store root")?,
+        &path,
+    )?;
 
     ui::success(&format!("Uninstalled persona '{}' ({})", name, scope));
     Ok(())
@@ -652,28 +605,77 @@ fn uninstall_all(global: bool) -> Result<()> {
         config::local_persona_target()
     };
 
-    if !dir.is_dir() {
+    let Some(count) = remove_all_persona_entries(&dir)? else {
         ui::info("No personas installed.");
         return Ok(());
+    };
+
+    let scope = if global { "global" } else { "local" };
+    ui::success(&format!("Uninstalled {} personas ({})", count, scope));
+    Ok(())
+}
+
+/// Reject persona stores whose `.agents` parent or `personas` root is a symlink.
+/// These are the mutable path components owned by persona installation; following
+/// either during uninstall could redirect recursive deletion outside the store.
+fn ensure_persona_store_safe(dir: &Path) -> Result<()> {
+    for component in [dir.parent(), Some(dir)].into_iter().flatten() {
+        if component.is_symlink() {
+            bail!(
+                "Refusing to uninstall through symlinked persona store path: {}",
+                component.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn find_installed_persona_for_removal(name: &str, dir: &Path) -> Result<Option<PathBuf>> {
+    ensure_persona_store_safe(dir)?;
+    Ok(find_installed_persona(name, dir))
+}
+
+fn remove_all_persona_entries(dir: &Path) -> Result<Option<usize>> {
+    ensure_persona_store_safe(dir)?;
+    if !dir.is_dir() {
+        return Ok(None);
     }
 
     let mut count = 0;
-    for entry in fs::read_dir(&dir)?.flatten() {
+    for entry in fs::read_dir(dir)?.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         if name.starts_with('.') {
             continue;
         }
-        let path = entry.path();
-        if path.is_symlink() || path.is_file() {
-            fs::remove_file(&path)?;
-        } else {
-            fs::remove_dir_all(&path)?;
-        }
+        remove_persona_entry(dir, &entry.path())?;
         count += 1;
     }
+    Ok(Some(count))
+}
 
-    let scope = if global { "global" } else { "local" };
-    ui::success(&format!("Uninstalled {} personas ({})", count, scope));
+fn remove_persona_entry(dir: &Path, path: &Path) -> Result<()> {
+    ensure_persona_store_safe(dir)?;
+    let relative = path.strip_prefix(dir).with_context(|| {
+        format!(
+            "Refusing to remove path outside persona store: {}",
+            path.display()
+        )
+    })?;
+    let mut components = relative.components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        bail!(
+            "Refusing to remove malformed path outside persona store: {}",
+            path.display()
+        );
+    }
+
+    if path.is_symlink() || path.is_file() {
+        fs::remove_file(path)?;
+    } else {
+        fs::remove_dir_all(path)?;
+    }
     Ok(())
 }
 
@@ -1195,8 +1197,8 @@ fn default_persona_template(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_remote_persona_destination, replace_remote_persona_bytes_with,
-        replace_remote_persona_path_with,
+        ensure_remote_persona_destination, post_persona_install, remove_all_persona_entries,
+        remove_persona_entry, replace_remote_persona_bytes_with, replace_remote_persona_path_with,
     };
     use anyhow::bail;
     use std::fs;
@@ -1328,6 +1330,210 @@ mod tests {
         assert_eq!(
             fs::read_to_string(destination.join("PERSONA.md")).unwrap(),
             "old bytes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn single_uninstall_rejects_symlinked_store_root_without_touching_outside_sentinel() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let sentinel = outside.join("sentinel.md");
+        fs::write(&sentinel, "outside sentinel").unwrap();
+
+        let agents = temp.path().join("home/.agents");
+        fs::create_dir_all(&agents).unwrap();
+        let store = agents.join("personas");
+        std::os::unix::fs::symlink(&outside, &store).unwrap();
+
+        let error = remove_persona_entry(&store, &store.join("sentinel.md")).unwrap_err();
+        assert!(error.to_string().contains("symlinked persona store path"));
+        assert_eq!(fs::read_to_string(sentinel).unwrap(), "outside sentinel");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn single_uninstall_rejects_symlinked_store_parent_without_touching_outside_sentinel() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let outside = temp.path().join("outside/.agents/personas");
+        fs::create_dir_all(&outside).unwrap();
+        let sentinel = outside.join("sentinel.md");
+        fs::write(&sentinel, "outside sentinel").unwrap();
+
+        let home = temp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        std::os::unix::fs::symlink(temp.path().join("outside/.agents"), home.join(".agents"))
+            .unwrap();
+        let store = home.join(".agents/personas");
+
+        let error = remove_persona_entry(&store, &store.join("sentinel.md")).unwrap_err();
+        assert!(error.to_string().contains("symlinked persona store path"));
+        assert_eq!(fs::read_to_string(sentinel).unwrap(), "outside sentinel");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn single_uninstall_removes_only_store_link_not_outside_target() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = temp.path().join("home/.agents/personas");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&store).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let sentinel = outside.join("sentinel.md");
+        fs::write(&sentinel, "outside sentinel").unwrap();
+        let installed = store.join("installed");
+        std::os::unix::fs::symlink(&sentinel, &installed).unwrap();
+
+        remove_persona_entry(&store, &installed).unwrap();
+
+        assert!(fs::symlink_metadata(installed).is_err());
+        assert_eq!(fs::read_to_string(sentinel).unwrap(), "outside sentinel");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_all_rejects_symlinked_store_root_without_touching_outside_sentinel() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let sentinel = outside.join("sentinel.md");
+        fs::write(&sentinel, "outside sentinel").unwrap();
+
+        let agents = temp.path().join("home/.agents");
+        fs::create_dir_all(&agents).unwrap();
+        let store = agents.join("personas");
+        std::os::unix::fs::symlink(&outside, &store).unwrap();
+
+        let error = remove_all_persona_entries(&store).unwrap_err();
+        assert!(error.to_string().contains("symlinked persona store path"));
+        assert_eq!(fs::read_to_string(sentinel).unwrap(), "outside sentinel");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_all_rejects_symlinked_store_parent_without_touching_outside_sentinel() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let outside = temp.path().join("outside/.agents/personas");
+        fs::create_dir_all(&outside).unwrap();
+        let sentinel = outside.join("sentinel.md");
+        fs::write(&sentinel, "outside sentinel").unwrap();
+
+        let home = temp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        std::os::unix::fs::symlink(temp.path().join("outside/.agents"), home.join(".agents"))
+            .unwrap();
+        let store = home.join(".agents/personas");
+
+        let error = remove_all_persona_entries(&store).unwrap_err();
+        assert!(error.to_string().contains("symlinked persona store path"));
+        assert_eq!(fs::read_to_string(sentinel).unwrap(), "outside sentinel");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_all_removes_only_store_entries_not_outside_targets() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = temp.path().join("home/.agents/personas");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&store).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let sentinel = outside.join("sentinel.md");
+        fs::write(&sentinel, "outside sentinel").unwrap();
+        let linked_persona = store.join("linked-persona");
+        std::os::unix::fs::symlink(&sentinel, &linked_persona).unwrap();
+        let copied_persona = store.join("copied-persona");
+        fs::create_dir_all(&copied_persona).unwrap();
+        fs::write(copied_persona.join("PERSONA.md"), "inside").unwrap();
+
+        assert_eq!(remove_all_persona_entries(&store).unwrap(), Some(2));
+
+        assert!(fs::symlink_metadata(linked_persona).is_err());
+        assert!(fs::symlink_metadata(copied_persona).is_err());
+        assert_eq!(fs::read_to_string(sentinel).unwrap(), "outside sentinel");
+    }
+
+    #[test]
+    fn persona_install_does_not_execute_env_discovered_static_index_script() {
+        const CHILD_ENV: &str = "AGT_PERSONA_ENV_SCRIPT_CHILD";
+        const MARKER_ENV: &str = "AGT_PERSONA_AMBIENT_SCRIPT_MARKER";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            post_persona_install();
+            return;
+        }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("ambient-source");
+        let script_dir = source.join("context/static-index/scripts");
+        fs::create_dir_all(&script_dir).unwrap();
+        fs::write(
+            script_dir.join("static-index.sh"),
+            format!("#!/bin/sh\nprintf executed > \"${MARKER_ENV}\"\n"),
+        )
+        .unwrap();
+        let marker = temp.path().join("ambient-script-executed");
+
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("cmd::persona::tests::persona_install_does_not_execute_env_discovered_static_index_script")
+            .arg("--nocapture")
+            .current_dir(temp.path())
+            .env(CHILD_ENV, "1")
+            .env("AGT_DIR", &source)
+            .env(MARKER_ENV, &marker)
+            .status()
+            .unwrap();
+
+        assert!(status.success());
+        assert!(
+            !marker.exists(),
+            "persona post-install executed an ambient static-index script"
+        );
+    }
+
+    #[test]
+    fn persona_install_does_not_execute_cwd_discovered_static_index_script() {
+        const CHILD_ENV: &str = "AGT_PERSONA_CWD_SCRIPT_CHILD";
+        const MARKER_ENV: &str = "AGT_PERSONA_AMBIENT_SCRIPT_MARKER";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            post_persona_install();
+            return;
+        }
+
+        let source = tempfile::TempDir::new().unwrap();
+        let script_dir = source.path().join("context/static-index/scripts");
+        fs::create_dir_all(&script_dir).unwrap();
+        fs::write(
+            script_dir.join("static-index.sh"),
+            format!("#!/bin/sh\nprintf executed > \"${MARKER_ENV}\"\n"),
+        )
+        .unwrap();
+        fs::create_dir_all(source.path().join("review/test-persona")).unwrap();
+        fs::write(
+            source.path().join("review/test-persona/SKILL.md"),
+            "---\nname: test-persona\n---\n",
+        )
+        .unwrap();
+        let marker = source.path().join("ambient-script-executed");
+
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("cmd::persona::tests::persona_install_does_not_execute_cwd_discovered_static_index_script")
+            .arg("--nocapture")
+            .current_dir(source.path())
+            .env(CHILD_ENV, "1")
+            .env_remove("AGT_DIR")
+            .env_remove("AGENT_SKILLS_DIR")
+            .env(MARKER_ENV, &marker)
+            .status()
+            .unwrap();
+
+        assert!(status.success());
+        assert!(
+            !marker.exists(),
+            "persona post-install executed a CWD-discovered static-index script"
         );
     }
 }
