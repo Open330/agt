@@ -266,22 +266,19 @@ fn install(name: Option<String>, force: bool) -> Result<()> {
         None => registry.iter().collect(),
     };
 
-    // Resolve every command source before creating the target directory or
-    // changing files. Keep the canonical path so a later lookup cannot follow
-    // a changed source symlink outside the hooks directory.
-    let command_sources = validate_command_sources(&to_install, &hooks_source)?;
-
-    // Install command hook scripts to ~/.claude/hooks/.
     let hooks_target = config::global_hook_target();
-    install_command_scripts(&command_sources, &hooks_target, force)?;
-
-    // Merge hook config into settings.json
     let settings_path = config::claude_settings_path();
-    merge_hooks_into_settings(&settings_path, &to_install, &hooks_target)?;
+    let registered = install_selected_hooks(
+        &settings_path,
+        &hooks_source,
+        &hooks_target,
+        &to_install,
+        force,
+    )?;
 
     ui::success(&format!(
         "{} hook(s) registered in settings.json",
-        to_install.len()
+        registered
     ));
     Ok(())
 }
@@ -305,14 +302,8 @@ fn uninstall(name: Option<String>) -> Result<()> {
         None => registry.iter().collect(),
     };
 
-    // Destination validation is independent of the original source, so stale
-    // installed links remain removable after their source disappears.
-    let command_scripts = validate_command_script_names(&to_remove)?;
-    uninstall_command_scripts(&command_scripts, &hooks_target)?;
-
-    // Remove from settings.json
     let settings_path = config::claude_settings_path();
-    remove_hooks_from_settings(&settings_path, &to_remove, &hooks_target)?;
+    uninstall_selected_hooks(&settings_path, &hooks_target, &to_remove)?;
 
     ui::success(&format!(
         "{} hook(s) removed from settings.json",
@@ -351,30 +342,10 @@ fn test_hook(name: &str, payload: Option<String>) -> Result<()> {
     match def.hook_type {
         HookType::Command => {
             let hooks_source = hooks_source_dir()?;
-            let script = def
-                .script
-                .as_ref()
-                .with_context(|| "Command hook has no script")?;
-            let script_path = hooks_source.join(script);
-
-            if !script_path.exists() {
-                bail!("Script not found: {}", script_path.display());
-            }
+            let (script_path, output) =
+                execute_command_hook(name, def, &hooks_source, &test_payload)?;
 
             ui::info(&format!("Running: bash {}", script_path.display()));
-            let output = std::process::Command::new("bash")
-                .arg(&script_path)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .and_then(|mut child| {
-                    use std::io::Write;
-                    if let Some(ref mut stdin) = child.stdin {
-                        stdin.write_all(test_payload.as_bytes())?;
-                    }
-                    child.wait_with_output()
-                })?;
 
             eprintln!();
             eprintln!("  {} {}", "Exit code:".bold(), output.status);
@@ -825,6 +796,41 @@ fn ensure_command_success(name: &str, status: &std::process::ExitStatus) -> Resu
     Ok(())
 }
 
+fn execute_command_hook(
+    name: &str,
+    def: &HookDef,
+    hooks_source: &Path,
+    payload: &str,
+) -> Result<(PathBuf, std::process::Output)> {
+    let script = def
+        .script
+        .as_deref()
+        .with_context(|| format!("Command hook '{}' has no script", name))?;
+    validate_command_script_name(name, script)?;
+    let script_path = validate_command_source(name, script, hooks_source)?;
+    let output = std::process::Command::new("bash")
+        .arg(&script_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            if let Some(ref mut stdin) = child.stdin {
+                stdin.write_all(payload.as_bytes())?;
+            }
+            child.wait_with_output()
+        })
+        .with_context(|| {
+            format!(
+                "Failed to execute command hook '{}' from {}",
+                name,
+                script_path.display()
+            )
+        })?;
+    Ok((script_path, output))
+}
+
 fn ensure_http_success(name: &str, status: u16) -> Result<()> {
     if !(200..300).contains(&status) {
         bail!("Hook '{}' HTTP request returned status {}", name, status);
@@ -834,12 +840,13 @@ fn ensure_http_success(name: &str, status: u16) -> Result<()> {
 
 fn load_installed_hooks() -> Result<serde_json::Value> {
     let settings_path = config::claude_settings_path();
-    if !settings_path.exists() {
+    let Some(settings) = read_hook_settings(&settings_path)? else {
         return Ok(serde_json::json!({}));
-    }
-    let content = fs::read_to_string(&settings_path)?;
-    let settings: serde_json::Value = serde_json::from_str(&content)?;
-    Ok(settings.get("hooks").cloned().unwrap_or(serde_json::json!({})))
+    };
+    Ok(settings
+        .get("hooks")
+        .cloned()
+        .unwrap_or(serde_json::json!({})))
 }
 
 fn is_hook_installed(_name: &str, def: &HookDef, installed: &serde_json::Value) -> bool {
@@ -887,20 +894,104 @@ fn is_hook_installed(_name: &str, def: &HookDef, installed: &serde_json::Value) 
     false
 }
 
+fn install_selected_hooks(
+    settings_path: &Path,
+    hooks_source: &Path,
+    hooks_target: &Path,
+    hooks: &[(&String, &HookDef)],
+    force: bool,
+) -> Result<usize> {
+    let mut settings = read_hook_settings(settings_path)?.unwrap_or_else(|| serde_json::json!({}));
+
+    // Resolve every command source and validate the complete settings shape
+    // before creating the target directory, changing scripts, or registering
+    // a handler.
+    let command_sources = validate_command_sources(hooks, hooks_source)?;
+    let registered = merge_hooks_into_settings(&mut settings, settings_path, hooks, hooks_target)?;
+
+    install_command_scripts(&command_sources, hooks_target, force)?;
+    write_hook_settings(settings_path, &settings)?;
+    Ok(registered)
+}
+
+fn uninstall_selected_hooks(
+    settings_path: &Path,
+    hooks_target: &Path,
+    hooks: &[(&String, &HookDef)],
+) -> Result<()> {
+    let mut settings = read_hook_settings(settings_path)?;
+    if let Some(settings) = settings.as_mut() {
+        remove_hooks_from_settings(settings, settings_path, hooks)?;
+    }
+
+    // Destination validation is independent of the original source, so stale
+    // installed links remain removable after their source disappears.
+    let command_scripts = validate_command_script_names(hooks)?;
+    uninstall_command_scripts(&command_scripts, hooks_target)?;
+    if let Some(settings) = settings {
+        write_hook_settings(settings_path, &settings)?;
+    }
+    Ok(())
+}
+
+fn read_hook_settings(settings_path: &Path) -> Result<Option<serde_json::Value>> {
+    if !settings_path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(settings_path)
+        .with_context(|| format!("Cannot read Claude settings: {}", settings_path.display()))?;
+    let settings = serde_json::from_str(&content)
+        .with_context(|| format!("Invalid Claude settings JSON: {}", settings_path.display()))?;
+    validate_hook_settings_shape(&settings, settings_path)?;
+    Ok(Some(settings))
+}
+
+fn validate_hook_settings_shape(settings: &serde_json::Value, settings_path: &Path) -> Result<()> {
+    let root = settings.as_object().with_context(|| {
+        format!(
+            "Invalid Claude settings at {}: expected the root value to be an object",
+            settings_path.display()
+        )
+    })?;
+    let Some(hooks) = root.get("hooks") else {
+        return Ok(());
+    };
+    let hooks = hooks.as_object().with_context(|| {
+        format!(
+            "Invalid Claude settings at {}: expected 'hooks' to be an object",
+            settings_path.display()
+        )
+    })?;
+    for (event, entries) in hooks {
+        if !entries.is_array() {
+            bail!(
+                "Invalid Claude settings at {}: expected hook event '{}' to be an array",
+                settings_path.display(),
+                event
+            );
+        }
+    }
+    Ok(())
+}
+
+fn write_hook_settings(settings_path: &Path, settings: &serde_json::Value) -> Result<()> {
+    if let Some(parent) = settings_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Cannot create {}", parent.display()))?;
+    }
+    let content = serde_json::to_string_pretty(settings)?;
+    fs::write(settings_path, content)
+        .with_context(|| format!("Cannot write Claude settings: {}", settings_path.display()))?;
+    Ok(())
+}
+
 fn merge_hooks_into_settings(
+    settings: &mut serde_json::Value,
     settings_path: &Path,
     hooks: &[(&String, &HookDef)],
     hooks_target: &Path,
-) -> Result<()> {
-    let mut settings: serde_json::Value = if settings_path.exists() {
-        let content = fs::read_to_string(settings_path)?;
-        serde_json::from_str(&content)?
-    } else {
-        if let Some(parent) = settings_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        serde_json::json!({})
-    };
+) -> Result<usize> {
+    validate_hook_settings_shape(settings, settings_path)?;
 
     let hooks_obj = settings
         .as_object_mut()
@@ -908,6 +999,7 @@ fn merge_hooks_into_settings(
         .entry("hooks")
         .or_insert_with(|| serde_json::json!({}));
 
+    let mut registered = 0;
     for (_name, def) in hooks {
         let event = &def.event;
         let event_arr = hooks_obj
@@ -928,25 +1020,18 @@ fn merge_hooks_into_settings(
                     .insert("matcher".to_string(), serde_json::json!(matcher));
             }
             event_arr.as_array_mut().unwrap().push(entry);
+            registered += 1;
         }
     }
-
-    let content = serde_json::to_string_pretty(&settings)?;
-    fs::write(settings_path, content)?;
-    Ok(())
+    Ok(registered)
 }
 
 fn remove_hooks_from_settings(
+    settings: &mut serde_json::Value,
     settings_path: &Path,
     hooks: &[(&String, &HookDef)],
-    _hooks_target: &Path,
 ) -> Result<()> {
-    if !settings_path.exists() {
-        return Ok(());
-    }
-
-    let content = fs::read_to_string(settings_path)?;
-    let mut settings: serde_json::Value = serde_json::from_str(&content)?;
+    validate_hook_settings_shape(settings, settings_path)?;
 
     if let Some(hooks_obj) = settings.get_mut("hooks").and_then(|v| v.as_object_mut()) {
         for (_name, def) in hooks {
@@ -1003,9 +1088,6 @@ fn remove_hooks_from_settings(
             settings.as_object_mut().unwrap().remove("hooks");
         }
     }
-
-    let content = serde_json::to_string_pretty(&settings)?;
-    fs::write(settings_path, content)?;
     Ok(())
 }
 
@@ -1279,6 +1361,252 @@ mod tests {
         let hooks: Vec<_> = registry.iter().collect();
 
         assert!(validate_command_script_names(&hooks).unwrap().is_empty());
+    }
+
+    #[test]
+    fn malformed_settings_shapes_fail_before_hook_file_or_settings_mutation() {
+        let cases = [
+            (serde_json::json!([]), "root"),
+            (serde_json::json!({ "hooks": [] }), "hooks"),
+            (
+                serde_json::json!({ "hooks": { "PreToolUse": {} } }),
+                "PreToolUse",
+            ),
+        ];
+
+        for (settings_value, expected_context) in cases {
+            let temp = tempfile::TempDir::new().unwrap();
+            let hooks_source = temp.path().join("source");
+            let hooks_target = temp.path().join("target");
+            let settings_path = temp.path().join("settings.json");
+            fs::create_dir(&hooks_source).unwrap();
+            fs::create_dir(&hooks_target).unwrap();
+            fs::write(hooks_source.join("check.sh"), "#!/bin/sh\n").unwrap();
+            let destination = hooks_target.join("check.sh");
+            fs::write(&destination, "existing destination").unwrap();
+            let original_settings = settings_value.to_string();
+            fs::write(&settings_path, &original_settings).unwrap();
+            let registry = parse_registry(serde_json::json!({
+                "command-hook": {
+                    "description": "command",
+                    "event": "PreToolUse",
+                    "type": "command",
+                    "script": "check.sh"
+                }
+            }));
+            let hooks: Vec<_> = registry.iter().collect();
+
+            let install_error =
+                install_selected_hooks(&settings_path, &hooks_source, &hooks_target, &hooks, true)
+                    .unwrap_err();
+            let install_message = format!("{install_error:#}");
+            assert!(
+                install_message.contains(expected_context),
+                "{install_message}"
+            );
+            assert!(
+                install_message.contains(&settings_path.display().to_string()),
+                "{install_message}"
+            );
+            assert_eq!(
+                fs::read_to_string(&settings_path).unwrap(),
+                original_settings
+            );
+            assert_eq!(
+                fs::read_to_string(&destination).unwrap(),
+                "existing destination"
+            );
+
+            let uninstall_error =
+                uninstall_selected_hooks(&settings_path, &hooks_target, &hooks).unwrap_err();
+            let uninstall_message = format!("{uninstall_error:#}");
+            assert!(
+                uninstall_message.contains(expected_context),
+                "{uninstall_message}"
+            );
+            assert_eq!(
+                fs::read_to_string(&settings_path).unwrap(),
+                original_settings
+            );
+            assert_eq!(
+                fs::read_to_string(&destination).unwrap(),
+                "existing destination"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_command_source_fails_before_destination_or_registration_mutation() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let hooks_source = temp.path().join("source");
+        let hooks_target = temp.path().join("target");
+        let settings_path = temp.path().join("settings.json");
+        fs::create_dir(&hooks_source).unwrap();
+        fs::create_dir(&hooks_target).unwrap();
+        let destination = hooks_target.join("missing.sh");
+        fs::write(&destination, "existing destination").unwrap();
+        let original_settings = r#"{"unrelated":{"keep":true}}"#;
+        fs::write(&settings_path, original_settings).unwrap();
+        let registry = parse_registry(serde_json::json!({
+            "missing-command": {
+                "description": "command",
+                "event": "PreToolUse",
+                "type": "command",
+                "script": "missing.sh"
+            }
+        }));
+        let hooks: Vec<_> = registry.iter().collect();
+
+        let error =
+            install_selected_hooks(&settings_path, &hooks_source, &hooks_target, &hooks, true)
+                .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("missing-command"), "{message}");
+        assert!(message.contains("missing.sh"), "{message}");
+        assert_eq!(
+            fs::read_to_string(&settings_path).unwrap(),
+            original_settings
+        );
+        assert_eq!(
+            fs::read_to_string(destination).unwrap(),
+            "existing destination"
+        );
+    }
+
+    #[test]
+    fn existing_command_destination_is_preserved_and_registration_count_is_exact() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let hooks_source = temp.path().join("source");
+        let hooks_target = temp.path().join("target");
+        let settings_path = temp.path().join("settings.json");
+        fs::create_dir(&hooks_source).unwrap();
+        fs::create_dir(&hooks_target).unwrap();
+        fs::write(hooks_source.join("check.sh"), "#!/bin/sh\n").unwrap();
+        let destination = hooks_target.join("check.sh");
+        fs::write(&destination, "existing destination").unwrap();
+        fs::write(
+            &settings_path,
+            r#"{"unrelated":{"keep":true},"hooks":{"OtherEvent":[]}}"#,
+        )
+        .unwrap();
+        let registry = parse_registry(serde_json::json!({
+            "command-hook": {
+                "description": "command",
+                "event": "PreToolUse",
+                "type": "command",
+                "script": "check.sh"
+            }
+        }));
+        let hooks: Vec<_> = registry.iter().collect();
+
+        assert_eq!(
+            install_selected_hooks(&settings_path, &hooks_source, &hooks_target, &hooks, false,)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            install_selected_hooks(&settings_path, &hooks_source, &hooks_target, &hooks, false,)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            fs::read_to_string(destination).unwrap(),
+            "existing destination"
+        );
+        let settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(settings_path).unwrap()).unwrap();
+        assert_eq!(settings["unrelated"], serde_json::json!({ "keep": true }));
+        assert_eq!(settings["hooks"]["OtherEvent"], serde_json::json!([]));
+        assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_test_never_executes_traversal_absolute_or_outside_symlink_sources() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let hooks_source = temp.path().join("hooks");
+        fs::create_dir(&hooks_source).unwrap();
+        let marker = temp.path().join("executed");
+        let outside = temp.path().join("outside.sh");
+        fs::write(
+            &outside,
+            format!("#!/bin/sh\nprintf executed > \"{}\"\n", marker.display()),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside, hooks_source.join("escape.sh")).unwrap();
+
+        let scripts = [
+            "../outside.sh".to_string(),
+            outside.display().to_string(),
+            "escape.sh".to_string(),
+        ];
+        for script in scripts {
+            let registry = parse_registry(serde_json::json!({
+                "command-hook": {
+                    "description": "command",
+                    "event": "PreToolUse",
+                    "type": "command",
+                    "script": script
+                }
+            }));
+            let def = registry.get("command-hook").unwrap();
+
+            assert!(execute_command_hook("command-hook", def, &hooks_source, "{}").is_err());
+            assert!(!marker.exists(), "rejected script executed: {script}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_test_executes_valid_contained_sources_and_preserves_exit_validation() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let hooks_source = temp.path().join("hooks");
+        fs::create_dir(&hooks_source).unwrap();
+        let captured = temp.path().join("payload.json");
+        let valid = hooks_source.join("valid.sh");
+        fs::write(
+            &valid,
+            format!("#!/bin/sh\ncat > \"{}\"\n", captured.display()),
+        )
+        .unwrap();
+        let failing = hooks_source.join("failing.sh");
+        fs::write(&failing, "#!/bin/sh\nexit 7\n").unwrap();
+
+        let valid_registry = parse_registry(serde_json::json!({
+            "command-hook": {
+                "description": "command",
+                "event": "PreToolUse",
+                "type": "command",
+                "script": "valid.sh"
+            }
+        }));
+        let (validated_path, output) = execute_command_hook(
+            "command-hook",
+            valid_registry.get("command-hook").unwrap(),
+            &hooks_source,
+            "{\"ok\":true}",
+        )
+        .unwrap();
+        assert_eq!(validated_path, valid.canonicalize().unwrap());
+        assert!(ensure_command_success("command-hook", &output.status).is_ok());
+        assert_eq!(fs::read_to_string(captured).unwrap(), "{\"ok\":true}");
+
+        let failing_registry = parse_registry(serde_json::json!({
+            "command-hook": {
+                "description": "command",
+                "event": "PreToolUse",
+                "type": "command",
+                "script": "failing.sh"
+            }
+        }));
+        let (_, output) = execute_command_hook(
+            "command-hook",
+            failing_registry.get("command-hook").unwrap(),
+            &hooks_source,
+            "{}",
+        )
+        .unwrap();
+        assert!(ensure_command_success("command-hook", &output.status).is_err());
     }
 
     #[cfg(unix)]

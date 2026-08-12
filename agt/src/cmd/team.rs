@@ -379,16 +379,11 @@ fn disable() -> Result<()> {
 
 fn set_teams_setting(enabled: bool) -> Result<()> {
     let settings_path = config::claude_settings_path();
+    set_teams_setting_at(&settings_path, enabled)
+}
 
-    let mut settings: serde_json::Value = if settings_path.exists() {
-        let content = fs::read_to_string(&settings_path)?;
-        serde_json::from_str(&content)?
-    } else {
-        if let Some(parent) = settings_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        serde_json::json!({})
-    };
+fn set_teams_setting_at(settings_path: &Path, enabled: bool) -> Result<()> {
+    let mut settings = read_team_settings(settings_path)?.unwrap_or_else(|| serde_json::json!({}));
 
     let obj = settings.as_object_mut().unwrap();
 
@@ -409,9 +404,7 @@ fn set_teams_setting(enabled: bool) -> Result<()> {
         }
     }
 
-    let content = serde_json::to_string_pretty(&settings)?;
-    fs::write(&settings_path, content)?;
-    Ok(())
+    write_team_settings(settings_path, &settings)
 }
 
 // ── Status ────────────────────────────────────────────────────────
@@ -628,12 +621,13 @@ fn load_template(name: &str) -> Result<TeamTemplate> {
 
 fn is_teams_enabled() -> Result<bool> {
     let settings_path = config::claude_settings_path();
-    if !settings_path.exists() {
-        return Ok(false);
-    }
-    let content = fs::read_to_string(&settings_path)?;
-    let settings: serde_json::Value = serde_json::from_str(&content)?;
+    is_teams_enabled_at(&settings_path)
+}
 
+fn is_teams_enabled_at(settings_path: &Path) -> Result<bool> {
+    let Some(settings) = read_team_settings(settings_path)? else {
+        return Ok(false);
+    };
     Ok(settings
         .get("env")
         .and_then(|e| e.get("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"))
@@ -644,16 +638,55 @@ fn is_teams_enabled() -> Result<bool> {
 
 fn get_teammate_mode() -> Result<Option<String>> {
     let settings_path = config::claude_settings_path();
-    if !settings_path.exists() {
+    let Some(settings) = read_team_settings(&settings_path)? else {
         return Ok(None);
-    }
-    let content = fs::read_to_string(&settings_path)?;
-    let settings: serde_json::Value = serde_json::from_str(&content)?;
+    };
 
     Ok(settings
         .get("teammateMode")
         .and_then(|v| v.as_str())
         .map(String::from))
+}
+
+fn read_team_settings(settings_path: &Path) -> Result<Option<serde_json::Value>> {
+    if !settings_path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(settings_path)
+        .with_context(|| format!("Cannot read Claude settings: {}", settings_path.display()))?;
+    let settings = serde_json::from_str(&content)
+        .with_context(|| format!("Invalid Claude settings JSON: {}", settings_path.display()))?;
+    validate_team_settings_shape(&settings, settings_path)?;
+    Ok(Some(settings))
+}
+
+fn validate_team_settings_shape(settings: &serde_json::Value, settings_path: &Path) -> Result<()> {
+    let root = settings.as_object().with_context(|| {
+        format!(
+            "Invalid Claude settings at {}: expected the root value to be an object",
+            settings_path.display()
+        )
+    })?;
+    if let Some(env) = root.get("env") {
+        if !env.is_object() {
+            bail!(
+                "Invalid Claude settings at {}: expected 'env' to be an object",
+                settings_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn write_team_settings(settings_path: &Path, settings: &serde_json::Value) -> Result<()> {
+    if let Some(parent) = settings_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Cannot create {}", parent.display()))?;
+    }
+    let content = serde_json::to_string_pretty(settings)?;
+    fs::write(settings_path, content)
+        .with_context(|| format!("Cannot write Claude settings: {}", settings_path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -686,5 +719,74 @@ mod tests {
         let message = format!("{error:#}");
         assert!(message.contains("Invalid team template YAML"));
         assert!(message.contains(&path.display().to_string()));
+    }
+
+    #[test]
+    fn malformed_root_or_env_settings_fail_before_team_settings_mutation() {
+        let cases = [
+            (serde_json::json!([]), "root"),
+            (serde_json::json!({ "env": "invalid" }), "env"),
+        ];
+
+        for (settings_value, expected_context) in cases {
+            let temp = tempfile::TempDir::new().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let original_settings = settings_value.to_string();
+            fs::write(&settings_path, &original_settings).unwrap();
+
+            let enable_error = set_teams_setting_at(&settings_path, true).unwrap_err();
+            let enable_message = format!("{enable_error:#}");
+            assert!(
+                enable_message.contains(expected_context),
+                "{enable_message}"
+            );
+            assert!(
+                enable_message.contains(&settings_path.display().to_string()),
+                "{enable_message}"
+            );
+            assert_eq!(
+                fs::read_to_string(&settings_path).unwrap(),
+                original_settings
+            );
+
+            let status_error = is_teams_enabled_at(&settings_path).unwrap_err();
+            let status_message = format!("{status_error:#}");
+            assert!(
+                status_message.contains(expected_context),
+                "{status_message}"
+            );
+            assert_eq!(
+                fs::read_to_string(&settings_path).unwrap(),
+                original_settings
+            );
+        }
+    }
+
+    #[test]
+    fn team_setting_updates_preserve_unrelated_root_and_env_keys() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        fs::write(
+            &settings_path,
+            r#"{"theme":"dark","teammateMode":"tmux","env":{"KEEP":"yes"}}"#,
+        )
+        .unwrap();
+
+        set_teams_setting_at(&settings_path, true).unwrap();
+        assert!(is_teams_enabled_at(&settings_path).unwrap());
+        let enabled: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(enabled["theme"], "dark");
+        assert_eq!(enabled["teammateMode"], "tmux");
+        assert_eq!(enabled["env"]["KEEP"], "yes");
+        assert_eq!(enabled["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"], "1");
+
+        set_teams_setting_at(&settings_path, false).unwrap();
+        assert!(!is_teams_enabled_at(&settings_path).unwrap());
+        let disabled: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(settings_path).unwrap()).unwrap();
+        assert_eq!(disabled["theme"], "dark");
+        assert_eq!(disabled["teammateMode"], "tmux");
+        assert_eq!(disabled["env"], serde_json::json!({ "KEEP": "yes" }));
     }
 }
