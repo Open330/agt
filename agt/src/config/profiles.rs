@@ -149,16 +149,37 @@ pub fn resolve_profile(name: &str, source_dir: &Path) -> anyhow::Result<Resolved
     let mut skills = Vec::new();
 
     for spec in &def.skills {
-        if let Some((group, skill_name)) = spec.split_once('/') {
-            let pair = (group.to_string(), skill_name.to_string());
-            if !skills.contains(&pair) {
-                skills.push(pair);
-            }
+        let mut components = spec.split('/');
+        let group = components.next().unwrap_or_default();
+        let skill_name = components.next().unwrap_or_default();
+        if group.is_empty() || skill_name.is_empty() || components.next().is_some() {
+            anyhow::bail!(
+                "Invalid skill '{}' in profile '{}': expected exactly group/name",
+                spec,
+                name
+            );
+        }
+        crate::util::validate_name(group)
+            .with_context(|| format!("Invalid group in profile '{}' skill '{}'", name, spec))?;
+        crate::util::validate_name(skill_name)
+            .with_context(|| format!("Invalid name in profile '{}' skill '{}'", name, spec))?;
+
+        let pair = (group.to_string(), skill_name.to_string());
+        if !skills.contains(&pair) {
+            skills.push(pair);
         }
     }
 
     for group in &def.groups {
+        crate::util::validate_name(group)
+            .with_context(|| format!("Invalid group '{}' in profile '{}'", group, name))?;
         for skill in super::skills_in_group(source_dir, group) {
+            crate::util::validate_name(&skill).with_context(|| {
+                format!(
+                    "Invalid skill name '{}' discovered for group '{}' in profile '{}'",
+                    skill, group, name
+                )
+            })?;
             let pair = (group.clone(), skill);
             if !skills.contains(&pair) {
                 skills.push(pair);
@@ -235,5 +256,58 @@ mod tests {
 
         assert_eq!(profile.name, "core");
         assert!(!profile.skills.is_empty());
+    }
+
+    #[test]
+    fn profile_skills_require_exact_validated_group_name_pairs() {
+        for invalid in [
+            "skill",
+            "/skill",
+            "group/",
+            "group//skill",
+            "group/skill/extra",
+            "../skill",
+            "group/../skill",
+        ] {
+            let temp = tempfile::TempDir::new().unwrap();
+            std::fs::write(
+                temp.path().join("profiles.yml"),
+                format!("test:\n  skills:\n    - '{invalid}'\n"),
+            )
+            .unwrap();
+
+            let error = match resolve_profile("test", temp.path()) {
+                Ok(_) => panic!("invalid profile skill unexpectedly resolved: {invalid}"),
+                Err(error) => error,
+            };
+            assert!(
+                format!("{error:#}").contains("profile 'test'"),
+                "missing profile context for {invalid}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_profile_pairs_and_group_expansion_are_preserved() {
+        let temp = tempfile::TempDir::new().unwrap();
+        for skill in ["direct", "expanded"] {
+            let path = temp.path().join("group").join(skill);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("SKILL.md"), "skill").unwrap();
+        }
+        std::fs::write(
+            temp.path().join("profiles.yml"),
+            "test:\n  skills:\n    - group/direct\n  groups:\n    - group\n",
+        )
+        .unwrap();
+
+        let profile = resolve_profile("test", temp.path()).unwrap();
+        assert_eq!(
+            profile.skills,
+            vec![
+                ("group".to_string(), "direct".to_string()),
+                ("group".to_string(), "expanded".to_string()),
+            ]
+        );
     }
 }
