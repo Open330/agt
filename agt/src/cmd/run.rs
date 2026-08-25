@@ -96,7 +96,7 @@ fn auto_match_skills(prompt: &str) -> Option<String> {
         return None;
     }
 
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|a| std::cmp::Reverse(a.0));
 
     // Keep only skills scoring within half of the top match, capped at 5.
     // Drops weak namespace/tag-only matches when a clear winner exists.

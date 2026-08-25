@@ -152,9 +152,13 @@ jobs:
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --default-toolchain stable --profile minimal \
-                       -t ${{ matrix.target }}
+            | sh -s -- -y --default-toolchain none --profile minimal
+          export PATH="$HOME/.cargo/bin:$PATH"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          # rust-toolchain.toml pins the version; add the cross target to it
+          # rather than to a floating `stable` the build would never use.
+          rustup show
+          rustup target add ${{ matrix.target }}
 
       - name: Install Zig
         run: |
