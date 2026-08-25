@@ -151,7 +151,7 @@ fn list(json_output: bool) -> Result<()> {
     ui::section("Hooks");
 
     let mut table = ui::table::new_table();
-    table.set_header(&["Status", "Type", "Name", "Event", "Description"]);
+    table.set_header(["Status", "Type", "Name", "Event", "Description"]);
     for (name, def) in &registry {
         let is_installed = is_hook_installed(name, def, &installed);
         let icon = if is_installed {
@@ -198,7 +198,7 @@ fn show(name: &str) -> Result<()> {
     ui::section(name);
 
     let mut table = ui::table::new_table();
-    table.set_header(&["Property", "Value"]);
+    table.set_header(["Property", "Value"]);
     ui::table::add_row(&mut table, &["Type", &def.hook_type.to_string()]);
     ui::table::add_row(&mut table, &["Event", &def.event]);
     ui::table::add_row(&mut table, &["Description", &def.description]);
@@ -490,7 +490,7 @@ fn which_exists(cmd: &str) -> bool {
 fn hooks_source_dir() -> Result<PathBuf> {
     let source = config::find_source_dir()
         .or_else(config::find_cwd_source_dir)
-        .with_context(|| config::source_dir_hint())?;
+        .with_context(config::source_dir_hint)?;
     Ok(source.join("hooks"))
 }
 

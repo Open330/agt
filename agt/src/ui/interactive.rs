@@ -74,10 +74,7 @@ fn run_interactive_selector_inner(
     let theme = ColorfulTheme::default();
 
     let modes: &[&str] = if remote {
-        &[
-            "Install a profile (curated set)",
-            "Browse by group",
-        ]
+        &["Install a profile (curated set)", "Browse by group"]
     } else {
         &[
             "Install a profile (curated set)",
@@ -102,7 +99,11 @@ fn run_interactive_selector_inner(
     }
 }
 
-fn select_profile(source_dir: &Path, theme: &ColorfulTheme, remote: bool) -> Result<InteractiveSelection> {
+fn select_profile(
+    source_dir: &Path,
+    theme: &ColorfulTheme,
+    remote: bool,
+) -> Result<InteractiveSelection> {
     let profiles = if remote {
         config::list_profiles_remote(source_dir)
     } else {
@@ -116,10 +117,7 @@ fn select_profile(source_dir: &Path, theme: &ColorfulTheme, remote: bool) -> Res
     let items: Vec<String> = profiles
         .iter()
         .map(|(name, desc, count)| {
-            truncate_for_display(
-                &format!("{:14} {} ({} skills)", name, desc, count),
-                max_w,
-            )
+            truncate_for_display(&format!("{:14} {} ({} skills)", name, desc, count), max_w)
         })
         .collect();
 
@@ -230,9 +228,7 @@ fn browse_by_group(
     }
 }
 
-pub fn run_no_source_selector(
-    cwd_source: Option<PathBuf>,
-) -> Result<InteractiveSelection> {
+pub fn run_no_source_selector(cwd_source: Option<PathBuf>) -> Result<InteractiveSelection> {
     let theme = ColorfulTheme::default();
 
     if cwd_source.is_some() {
@@ -361,13 +357,14 @@ pub fn select_personas(
         None => Ok(None),
         Some(indices) if indices.is_empty() => Ok(None),
         Some(indices) => {
-            let names: Vec<String> = indices
-                .into_iter()
-                .map(|i| personas[i].0.clone())
-                .collect();
+            let names: Vec<String> = indices.into_iter().map(|i| personas[i].0.clone()).collect();
 
             // Confirm
-            eprintln!("\nThe following {} personas will be installed ({}):", names.len(), scope);
+            eprintln!(
+                "\nThe following {} personas will be installed ({}):",
+                names.len(),
+                scope
+            );
             for name in &names {
                 eprintln!("  {}", name);
             }

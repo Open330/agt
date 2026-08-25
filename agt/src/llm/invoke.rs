@@ -66,9 +66,8 @@ fn invoke_child_with_wait(
     let mut stdin = child.stdin.take().context("Failed to open stdin")?;
     let prompt_owned = prompt.to_string();
     let writer = thread::spawn(move || {
-        let result = write_prompt(&mut stdin, &prompt_owned);
-        // stdin is dropped here, sending EOF
-        result
+        write_prompt(&mut stdin, &prompt_owned)
+        // stdin is dropped when this closure returns, sending EOF
     });
 
     // Drain stderr on its own thread. A chatty child (e.g. codex forwarding
@@ -195,7 +194,7 @@ mod tests {
 
     impl Read for BrokenReader {
         fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
-            Err(io::Error::new(io::ErrorKind::Other, "broken reader"))
+            Err(io::Error::other("broken reader"))
         }
     }
 
