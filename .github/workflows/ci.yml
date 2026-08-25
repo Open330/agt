@@ -1,0 +1,125 @@
+name: CI
+
+# Quality gate for the Rust CLI and the npm wrapper packages.
+# Release publication lives in release.yml and runs on `v*` tags.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            agt/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('agt/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Format
+        run: cargo fmt --manifest-path agt/Cargo.toml --all --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path agt/Cargo.toml --locked --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --manifest-path agt/Cargo.toml --locked
+
+  release-manifests:
+    name: version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Catches a half-finished `make bump` before a tag is pushed, which is
+      # otherwise only discovered when the release workflow aborts.
+      - name: Check checked-in versions
+        run: scripts/check-versions.sh
+
+      - name: Syntax-check npm scripts
+        run: |
+          for f in npm/scripts/*.js npm/lib/*.js npm/bin/*.js; do
+            [ -e "$f" ] || continue
+            node --check "$f"
+          done
+
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          rustup toolchain install stable --profile minimal -t ${{ matrix.target }}
+          rustup default stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            agt/target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('agt/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-${{ matrix.target }}-
+
+      - name: Install musl linker
+        if: endsWith(matrix.target, '-linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --manifest-path agt/Cargo.toml --locked --release --target ${{ matrix.target }}
+
+      - name: Smoke test
+        run: |
+          binary="agt/target/${{ matrix.target }}/release/agt"
+          version="$("$binary" --version)"
+          echo "$version"
+          expected="agt $(scripts/check-versions.sh)"
+          if [ "$version" != "$expected" ]; then
+            echo "Binary version mismatch: expected '$expected', got '$version'" >&2
+            exit 1
+          fi
+          "$binary" --help >/dev/null
