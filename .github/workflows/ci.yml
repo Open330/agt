@@ -26,10 +26,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # rust-toolchain.toml pins the version; `rustup show` installs it along
+      # with the rustfmt/clippy components it declares.
       - name: Install toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+          rustup show
           rustc --version
           cargo --version
 
@@ -41,7 +42,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             agt/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('agt/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('agt/Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Format
@@ -91,8 +92,9 @@ jobs:
 
       - name: Install toolchain
         run: |
-          rustup toolchain install stable --profile minimal -t ${{ matrix.target }}
-          rustup default stable
+          rustup show
+          rustup target add ${{ matrix.target }}
+          rustc --version
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -102,7 +104,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             agt/target
-          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('agt/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('agt/Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: ${{ runner.os }}-cargo-${{ matrix.target }}-
 
       - name: Install musl linker
