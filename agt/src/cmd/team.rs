@@ -156,14 +156,17 @@ fn list(json_output: bool) -> Result<()> {
     }
 
     let mut table = ui::table::new_table();
-    table.set_header(&["Name", "Description", "Teammates", "Tasks"]);
+    table.set_header(["Name", "Description", "Teammates", "Tasks"]);
     for (name, template) in &templates {
-        ui::table::add_row(&mut table, &[
-            name,
-            &template.description,
-            &template.teammates.len().to_string(),
-            &template.tasks.len().to_string(),
-        ]);
+        ui::table::add_row(
+            &mut table,
+            &[
+                name,
+                &template.description,
+                &template.teammates.len().to_string(),
+                &template.tasks.len().to_string(),
+            ],
+        );
     }
     println!("{table}");
 
@@ -182,13 +185,16 @@ fn show(name: &str) -> Result<()> {
     ui::section(&template.name);
 
     let mut info = ui::table::new_table();
-    info.set_header(&["Property", "Value"]);
+    info.set_header(["Property", "Value"]);
     ui::table::add_row(&mut info, &["Description", &template.description]);
     ui::table::add_row(&mut info, &["Display mode", &template.teammate_mode]);
-    ui::table::add_row(&mut info, &[
-        "Plan approval",
-        if template.plan_approval { "yes" } else { "no" },
-    ]);
+    ui::table::add_row(
+        &mut info,
+        &[
+            "Plan approval",
+            if template.plan_approval { "yes" } else { "no" },
+        ],
+    );
     if !template.skills.is_empty() {
         ui::table::add_row(&mut info, &["Required skills", &template.skills.join(", ")]);
     }
@@ -197,13 +203,16 @@ fn show(name: &str) -> Result<()> {
     if !template.teammates.is_empty() {
         println!("\n{}", "Teammates".bold());
         let mut t = ui::table::new_table();
-        t.set_header(&["#", "Role", "Description"]);
+        t.set_header(["#", "Role", "Description"]);
         for (i, m) in template.teammates.iter().enumerate() {
-            ui::table::add_row_cells(&mut t, vec![
-                Cell::new(&(i + 1).to_string()),
-                Cell::new(&m.role),
-                Cell::new(&m.description),
-            ]);
+            ui::table::add_row_cells(
+                &mut t,
+                vec![
+                    Cell::new((i + 1).to_string()),
+                    Cell::new(&m.role),
+                    Cell::new(&m.description),
+                ],
+            );
         }
         println!("{t}");
     }
@@ -211,14 +220,17 @@ fn show(name: &str) -> Result<()> {
     if !template.tasks.is_empty() {
         println!("\n{}", "Initial tasks".bold());
         let mut t = ui::table::new_table();
-        t.set_header(&["#", "Title", "Assignee"]);
+        t.set_header(["#", "Title", "Assignee"]);
         for (i, task) in template.tasks.iter().enumerate() {
             let assignee = task.assignee.as_deref().unwrap_or("unassigned");
-            ui::table::add_row_cells(&mut t, vec![
-                Cell::new(&(i + 1).to_string()),
-                Cell::new(&task.title),
-                Cell::new(assignee),
-            ]);
+            ui::table::add_row_cells(
+                &mut t,
+                vec![
+                    Cell::new((i + 1).to_string()),
+                    Cell::new(&task.title),
+                    Cell::new(assignee),
+                ],
+            );
         }
         println!("{t}");
     }
@@ -226,13 +238,10 @@ fn show(name: &str) -> Result<()> {
     if !template.hooks.is_empty() {
         println!("\n{}", "Hooks".bold());
         let mut t = ui::table::new_table();
-        t.set_header(&["Event", "Type"]);
+        t.set_header(["Event", "Type"]);
         for (event, hooks) in &template.hooks {
             for h in hooks {
-                ui::table::add_row_cells(&mut t, vec![
-                    Cell::new(event),
-                    Cell::new(&h.hook_type),
-                ]);
+                ui::table::add_row_cells(&mut t, vec![Cell::new(event), Cell::new(&h.hook_type)]);
             }
         }
         println!("{t}");
@@ -292,10 +301,7 @@ fn create(
             ));
         }
         if !mate.skills.is_empty() {
-            prompt.push_str(&format!(
-                "Required skills: {}\n",
-                mate.skills.join(", ")
-            ));
+            prompt.push_str(&format!("Required skills: {}\n", mate.skills.join(", ")));
         }
         if mate.plan_approval {
             prompt.push_str("Require plan approval before making changes.\n");
@@ -306,15 +312,17 @@ fn create(
     if !template.tasks.is_empty() {
         prompt.push_str("## Initial Task List\n\n");
         for (i, task) in template.tasks.iter().enumerate() {
-            prompt.push_str(&format!("{}. **{}**: {}\n", i + 1, task.title, task.description));
+            prompt.push_str(&format!(
+                "{}. **{}**: {}\n",
+                i + 1,
+                task.title,
+                task.description
+            ));
             if let Some(ref assignee) = task.assignee {
                 prompt.push_str(&format!("   Assign to: {}\n", assignee));
             }
             if !task.depends_on.is_empty() {
-                prompt.push_str(&format!(
-                    "   Depends on: {}\n",
-                    task.depends_on.join(", ")
-                ));
+                prompt.push_str(&format!("   Depends on: {}\n", task.depends_on.join(", ")));
             }
         }
         prompt.push('\n');
@@ -389,9 +397,7 @@ fn set_teams_setting_at(settings_path: &Path, enabled: bool) -> Result<()> {
     let obj = settings.as_object_mut().unwrap();
 
     if enabled {
-        let env_obj = obj
-            .entry("env")
-            .or_insert_with(|| serde_json::json!({}));
+        let env_obj = obj.entry("env").or_insert_with(|| serde_json::json!({}));
         env_obj.as_object_mut().unwrap().insert(
             "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS".to_string(),
             serde_json::json!("1"),
@@ -431,16 +437,10 @@ fn status() -> Result<()> {
         "Teammate mode:".bold(),
         mode.unwrap_or_else(|| "auto (default)".to_string()).cyan()
     );
-    eprintln!(
-        "  {} {}",
-        "Templates available:".bold(),
-        templates.len()
-    );
+    eprintln!("  {} {}", "Templates available:".bold(), templates.len());
 
     // Check for active teams
-    let teams_dir = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".claude/teams");
+    let teams_dir = dirs::home_dir().unwrap_or_default().join(".claude/teams");
     if teams_dir.exists() {
         if let Ok(entries) = fs::read_dir(&teams_dir) {
             let active: Vec<String> = entries
@@ -564,9 +564,7 @@ fn load_all_templates() -> Result<BTreeMap<String, TeamTemplate>> {
     }
 
     // 2. Global user templates
-    let global_dir = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".claude/teams");
+    let global_dir = dirs::home_dir().unwrap_or_default().join(".claude/teams");
     load_templates_from_dir(&global_dir, &mut templates)?;
 
     // 3. Project-local templates (highest priority)

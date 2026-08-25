@@ -21,17 +21,13 @@ pub fn execute(prompt: &str, skill: Option<&str>, llm_name: Option<&str>) -> Res
     let cli = if let Some(name) = llm_name {
         llm::parse_cli(name)?
     } else {
-        llm::detect_prefer_claude().context(
-            "No LLM CLI found. Install claude, codex, opencode, gemini, or ollama.",
-        )?
+        llm::detect_prefer_claude()
+            .context("No LLM CLI found. Install claude, codex, opencode, gemini, or ollama.")?
     };
 
     // Build final prompt
     let full_prompt = if let Some(ref skill_text) = skill_content {
-        format!(
-            "{}\n\n---\n\nUser request:\n{}",
-            skill_text, prompt
-        )
+        format!("{}\n\n---\n\nUser request:\n{}", skill_text, prompt)
     } else {
         prompt.to_string()
     };
@@ -57,16 +53,15 @@ fn load_skill(name: &str) -> Result<String> {
         .find_map(|target| find_installed_skill(target, name))
     {
         installed
-    } else if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
-        find_skill_in_source(&source_dir, name)
-            .context(format!("Skill '{}' not found", name))?
+    } else if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir)
+    {
+        find_skill_in_source(&source_dir, name).context(format!("Skill '{}' not found", name))?
     } else {
         bail!("Skill '{}' not found", name);
     };
 
     let skill_md = skill_dir.join("SKILL.md");
-    fs::read_to_string(&skill_md)
-        .context(format!("Failed to read {}", skill_md.display()))
+    fs::read_to_string(&skill_md).context(format!("Failed to read {}", skill_md.display()))
 }
 
 /// Auto-match multiple skills from installed skills based on prompt content.
@@ -88,7 +83,12 @@ fn auto_match_skills(prompt: &str) -> Option<String> {
     // Scan library skills
     if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
         for group in config::skill_groups(&source_dir) {
-            collect_scored_skills(&source_dir.join(&group), &prompt_lower, &mut scored, &mut seen);
+            collect_scored_skills(
+                &source_dir.join(&group),
+                &prompt_lower,
+                &mut scored,
+                &mut seen,
+            );
         }
     }
 
@@ -130,10 +130,18 @@ fn collect_scored_skills(
 
         let skill_md = path.join("SKILL.md");
         if skill_md.exists() {
-            score_skill(&path, &entry.file_name().to_string_lossy(), prompt_lower, scored, seen);
+            score_skill(
+                &path,
+                &entry.file_name().to_string_lossy(),
+                prompt_lower,
+                scored,
+                seen,
+            );
         } else {
             // Group directory — scan subdirectories
-            let Ok(sub_entries) = fs::read_dir(&path) else { continue };
+            let Ok(sub_entries) = fs::read_dir(&path) else {
+                continue;
+            };
             for sub_entry in sub_entries.flatten() {
                 let sub_path = sub_entry.path();
                 if sub_path.is_dir() && sub_path.join("SKILL.md").exists() {

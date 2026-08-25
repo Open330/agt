@@ -12,7 +12,10 @@ use clap_complete::Shell;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
-#[command(name = "agt", about = "agt — A modular toolkit for extending AI coding agents")]
+#[command(
+    name = "agt",
+    about = "agt — A modular toolkit for extending AI coding agents"
+)]
 #[command(version = VERSION)]
 struct Cli {
     #[command(subcommand)]
@@ -149,7 +152,8 @@ fn print_zsh_completions(base: &str) {
     print!("{}", base);
 
     // Add dynamic completion functions
-    println!(r#"
+    println!(
+        r#"
 # Dynamic completions for persona and skill names
 _agt_persona_names() {{
     local -a names
@@ -289,13 +293,15 @@ _agt_skill_update() {{
         '--local[Local only]' \
         '--agent=[Target agent]:agent:(claude codex)'
 }}
-"#);
+"#
+    );
 }
 
 fn print_bash_completions(base: &str) {
     print!("{}", base);
 
-    println!(r#"
+    println!(
+        r#"
 # Dynamic completions for persona and skill names
 _agt_dynamic_complete() {{
     local kind="$1"
@@ -361,13 +367,15 @@ _agt_enhanced() {{
     _agt "$@"
 }}
 complete -F _agt_enhanced -o nosort -o bashdefault -o default agt
-"#);
+"#
+    );
 }
 
 fn print_fish_completions(base: &str) {
     print!("{}", base);
 
-    println!(r#"
+    println!(
+        r#"
 # Dynamic completions for persona names
 complete -c agt -n '__fish_seen_subcommand_from persona; and __fish_seen_subcommand_from review install uninstall show which' -xa '(agt complete-names persona 2>/dev/null)'
 
@@ -379,7 +387,8 @@ complete -c agt -n '__fish_seen_subcommand_from hook; and __fish_seen_subcommand
 
 # Dynamic completions for skill names
 complete -c agt -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from install uninstall which update' -xa '(agt complete-names skill 2>/dev/null)'
-"#);
+"#
+    );
 }
 
 /// Output names for shell completion
@@ -409,9 +418,7 @@ fn complete_names(kind: &str) {
                 collect_yaml_names(&source_dir.join("teams"), &mut names);
             }
             // Global templates
-            let global_dir = dirs::home_dir()
-                .unwrap_or_default()
-                .join(".claude/teams");
+            let global_dir = dirs::home_dir().unwrap_or_default().join(".claude/teams");
             collect_yaml_names(&global_dir, &mut names);
             // Local templates
             collect_yaml_names(&std::path::PathBuf::from(".claude/teams"), &mut names);
@@ -424,10 +431,9 @@ fn complete_names(kind: &str) {
             if let Some(source_dir) = config::find_source_dir() {
                 let registry_path = source_dir.join("hooks/hooks.json");
                 if let Ok(content) = std::fs::read_to_string(&registry_path) {
-                    if let Ok(registry) =
-                        serde_json::from_str::<std::collections::BTreeMap<String, serde_json::Value>>(
-                            &content,
-                        )
+                    if let Ok(registry) = serde_json::from_str::<
+                        std::collections::BTreeMap<String, serde_json::Value>,
+                    >(&content)
                     {
                         for name in registry.keys() {
                             names.insert(name.clone());
@@ -469,7 +475,10 @@ fn collect_yaml_names(dir: &std::path::Path, names: &mut std::collections::BTree
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let raw = entry.file_name().to_string_lossy().to_string();
-            if let Some(stem) = raw.strip_suffix(".yml").or_else(|| raw.strip_suffix(".yaml")) {
+            if let Some(stem) = raw
+                .strip_suffix(".yml")
+                .or_else(|| raw.strip_suffix(".yaml"))
+            {
                 names.insert(stem.to_string());
             }
         }

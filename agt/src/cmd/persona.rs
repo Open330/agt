@@ -278,7 +278,7 @@ fn install_single_local_persona_link(
         link_path,
         force,
         name,
-        |source, destination| util::replace_symlink_transactionally(source, destination),
+        util::replace_symlink_transactionally,
     )
 }
 
@@ -631,11 +631,9 @@ fn install_remote_repo(spec: &remote::RemoteSpec, global: bool, force: bool) -> 
 
         let dest = target_dir.join(name);
 
-        if dest.exists() || dest.is_symlink() {
-            if !force {
-                skipped += 1;
-                continue;
-            }
+        if (dest.exists() || dest.is_symlink()) && !force {
+            skipped += 1;
+            continue;
         }
 
         let persona_spec = remote::RemoteSpec {
@@ -824,7 +822,7 @@ fn list(installed: bool, local: bool, global: bool, json: bool) -> Result<()> {
             return Ok(());
         }
         let mut table = ui::table::new_table();
-        table.set_header(&["Name", "Scope", "Role"]);
+        table.set_header(["Name", "Scope", "Role"]);
         for entry in &entries {
             let name = entry["name"].as_str().unwrap_or("");
             let scope = entry["scope"].as_str().unwrap_or("");
@@ -993,7 +991,7 @@ fn show(name: &str) -> Result<()> {
     let (fm, body) = frontmatter::parse(&content)?;
 
     let mut table = ui::table::new_table();
-    table.set_header(&["Field", "Value"]);
+    table.set_header(["Field", "Value"]);
     if let Some(n) = &fm.name {
         ui::table::add_row(&mut table, &["Name", n]);
     }
@@ -1027,6 +1025,8 @@ fn which(name: &str) -> Result<()> {
     Ok(())
 }
 
+// CLI flag fan-out: each argument maps 1:1 to a `persona review` option.
+#[allow(clippy::too_many_arguments)]
 fn review(
     name: &str,
     custom_prompt: Option<String>,

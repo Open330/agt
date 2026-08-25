@@ -251,7 +251,7 @@ fn install_single_local_skill_link(
         link_path,
         force,
         display_name,
-        |source, destination| util::replace_symlink_transactionally(source, destination),
+        util::replace_symlink_transactionally,
     )
 }
 
@@ -1141,7 +1141,7 @@ fn install_profile(
         force,
         &local_dir,
         &global_dir,
-        |source, destination| util::replace_symlink_transactionally(source, destination),
+        util::replace_symlink_transactionally,
     )?;
 
     ui::success(&format!(
@@ -1187,13 +1187,12 @@ where
         }
 
         // Check cross-scope duplicate
-        if !force && warn_cross_scope_duplicate(skill_name, group, global, &local_dir, &global_dir)
-        {
+        if !force && warn_cross_scope_duplicate(skill_name, group, global, local_dir, global_dir) {
             skipped += 1;
             continue;
         }
 
-        let link_path = config::skill_destination(&target_dir, group, skill_name, agent);
+        let link_path = config::skill_destination(target_dir, group, skill_name, agent);
         if let Some(parent) = link_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -1384,7 +1383,7 @@ fn install_selected_skills(
         force,
         &local_dir,
         &global_dir,
-        |source, destination| util::replace_symlink_transactionally(source, destination),
+        util::replace_symlink_transactionally,
     )?;
 
     ui::success(&format!(
@@ -1424,13 +1423,12 @@ where
         }
 
         // Check cross-scope duplicate
-        if !force && warn_cross_scope_duplicate(skill_name, group, global, &local_dir, &global_dir)
-        {
+        if !force && warn_cross_scope_duplicate(skill_name, group, global, local_dir, global_dir) {
             skipped += 1;
             continue;
         }
 
-        let link_path = config::skill_destination(&target_dir, group, skill_name, agent);
+        let link_path = config::skill_destination(target_dir, group, skill_name, agent);
         if let Some(parent) = link_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -2067,7 +2065,7 @@ fn list_profiles_display(json: bool) -> Result<()> {
     }
 
     let mut table = ui::table::new_table();
-    table.set_header(&["Profile", "Description", "Skills"]);
+    table.set_header(["Profile", "Description", "Skills"]);
     for (name, desc, count) in &profiles {
         ui::table::add_row(&mut table, &[name, desc, &count.to_string()]);
     }
@@ -2311,7 +2309,7 @@ fn print_grouped_installed(local_dir: &Path, global_dir: &Path) {
     // Group by group name, extract skill name from key
     let mut groups: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for (key, (group, scope, _desc)) in &seen {
-        let skill_name = key.split('/').last().unwrap_or(key).to_string();
+        let skill_name = key.split('/').next_back().unwrap_or(key).to_string();
         groups
             .entry(group.clone())
             .or_default()
@@ -2344,7 +2342,7 @@ fn print_grouped_installed(local_dir: &Path, global_dir: &Path) {
 
 fn print_flat(entries: &[serde_json::Value]) {
     let mut table = ui::table::new_table();
-    table.set_header(&["Skill", "Scope", "Description"]);
+    table.set_header(["Skill", "Scope", "Description"]);
     for entry in entries {
         let name = entry["name"].as_str().unwrap_or("");
         let scope = entry["scope"].as_str().unwrap_or("");
