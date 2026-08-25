@@ -1,8 +1,13 @@
 name: Release
 
-# GitHub (Open330/agt) is the source of truth. Gitea mirrors it (jiunbae/agt)
-# every 8h or via webhook. Tag pushes (`v*`) trigger this workflow and publish
-# to public npmjs.com.
+# GitHub (Open330/agt) is the source of truth AND the release runner
+# (.github/workflows/release.yml). Gitea mirrors the repo (jiunbae/agt) every
+# 8h or via webhook and keeps this workflow as a MANUAL FALLBACK only — for
+# when GitHub Actions is unavailable. It deliberately does not fire on tag
+# pushes, so the two forges never publish the same tag concurrently.
+#
+# To use it: run it from the Gitea UI on the exact `v<version>` tag with
+# dry_run=false and the version input set.
 #
 # Runners:
 #   ubuntu-latest  Docker mode (jiun-mini). Linux jobs run inside the per-job
@@ -10,9 +15,6 @@ name: Release
 #   macos-arm64    Host mode (jiun-mini-macos). Native darwin-arm64 build.
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       version:
@@ -45,63 +47,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          cargo_version="$(awk '
-            /^\[package\]$/ { in_package = 1; next }
-            in_package && /^\[/ { exit }
-            in_package && /^version = "/ {
-              value = $0
-              sub(/^version = "/, "", value)
-              sub(/"$/, "", value)
-              print value
-              exit
-            }
-          ' agt/Cargo.toml)"
-          lock_version="$(awk '
-            /^\[\[package\]\]$/ { in_agt = 0; next }
-            /^name = "agt"$/ { in_agt = 1; next }
-            in_agt && /^version = "/ {
-              value = $0
-              sub(/^version = "/, "", value)
-              sub(/"$/, "", value)
-              print value
-              exit
-            }
-          ' agt/Cargo.lock)"
+          version="$(scripts/check-versions.sh "$RELEASE_VERSION_INPUT")"
 
-          if [[ ! "$cargo_version" =~ ^[0-9]{4}\.(0?[1-9]|1[0-2])\.(0?[1-9]|[12][0-9]|3[01])$ ]]; then
-            echo "Invalid Cargo release version: expected YYYY.M.D, got '$cargo_version'" >&2
-            exit 1
-          fi
-          if [ "$lock_version" != "$cargo_version" ]; then
-            echo "Version mismatch: agt/Cargo.lock=$lock_version, agt/Cargo.toml=$cargo_version" >&2
-            exit 1
-          fi
-
-          for manifest in npm/package.json npm/platforms/*/package.json; do
-            manifest_version="$(node -p "require('./$manifest').version")"
-            if [ "$manifest_version" != "$cargo_version" ]; then
-              echo "Version mismatch: $manifest=$manifest_version, agt/Cargo.toml=$cargo_version" >&2
-              exit 1
-            fi
-          done
-
-          for package_name in \
-            @open330/agt-darwin-arm64 \
-            @open330/agt-linux-x64 \
-            @open330/agt-linux-arm64; do
-            dependency_version="$(node -p "require('./npm/package.json').optionalDependencies['$package_name']")"
-            if [ "$dependency_version" != "$cargo_version" ]; then
-              echo "Version mismatch: npm optionalDependency $package_name=$dependency_version, agt/Cargo.toml=$cargo_version" >&2
-              exit 1
-            fi
-          done
-
-          if [ -n "$RELEASE_VERSION_INPUT" ] && [ "$RELEASE_VERSION_INPUT" != "$cargo_version" ]; then
-            echo "Version input '$RELEASE_VERSION_INPUT' does not match checked-in version '$cargo_version'" >&2
-            exit 1
-          fi
-
-          expected_ref="refs/tags/v$cargo_version"
+          expected_ref="refs/tags/v$version"
           should_publish=false
           case "$RELEASE_EVENT" in
             push)
@@ -138,9 +86,9 @@ jobs:
               ;;
           esac
 
-          echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
-          echo "Validated release version: $cargo_version (publish=$should_publish)"
+          echo "Validated release version: $version (publish=$should_publish)"
 
   build-darwin-arm64:
     needs: validate-version

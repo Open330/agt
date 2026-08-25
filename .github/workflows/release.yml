@@ -1,0 +1,318 @@
+name: Release
+
+# GitHub (Open330/agt) is the source of truth and the release runner.
+# Pushing a `v<version>` tag builds every platform binary, publishes the npm
+# packages to npmjs.com and attaches the tarballs to the GitHub release for
+# direct binary downloads.
+#
+# The Gitea mirror (jiunbae/agt) keeps .gitea/workflows/release.yml as a
+# manual fallback; it no longer fires on tag pushes.
+#
+# Required secrets:
+#   NPM_TOKEN  npmjs.com automation token with publish rights on @open330/*
+# GITHUB_TOKEN (built in) uploads the release assets.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Expected version (without leading v). Must match checked-in manifests.'
+        required: false
+      dry_run:
+        description: 'Build only — skip npm publish and GitHub release upload.'
+        required: false
+        default: 'true'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      should_publish: ${{ steps.version.outputs.should_publish }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate checked-in release version
+        id: version
+        env:
+          RELEASE_VERSION_INPUT: ${{ inputs.version }}
+          RELEASE_DRY_RUN: ${{ inputs.dry_run }}
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+
+          version="$(scripts/check-versions.sh "$RELEASE_VERSION_INPUT")"
+
+          expected_ref="refs/tags/v$version"
+          should_publish=false
+          case "$RELEASE_EVENT" in
+            push)
+              if [ "$RELEASE_REF" != "$expected_ref" ]; then
+                echo "Release tag '$RELEASE_REF' does not exactly match '$expected_ref'" >&2
+                exit 1
+              fi
+              should_publish=true
+              ;;
+            workflow_dispatch)
+              case "$RELEASE_DRY_RUN" in
+                ''|true)
+                  ;;
+                false)
+                  if [ -z "$RELEASE_VERSION_INPUT" ]; then
+                    echo "Manual publication requires an explicit version input" >&2
+                    exit 1
+                  fi
+                  if [ "$RELEASE_REF" != "$expected_ref" ]; then
+                    echo "Manual publication requires the exact tag '$expected_ref'; got '$RELEASE_REF'" >&2
+                    exit 1
+                  fi
+                  should_publish=true
+                  ;;
+                *)
+                  echo "Invalid dry_run input '$RELEASE_DRY_RUN': expected true or false" >&2
+                  exit 1
+                  ;;
+              esac
+              ;;
+            *)
+              echo "Unsupported release event '$RELEASE_EVENT'" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
+          echo "Validated release version: $version (publish=$should_publish)"
+
+  build:
+    needs: validate-version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: darwin-arm64
+            native: true
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            platform: linux-x64
+            native: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            platform: linux-arm64
+            native: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          rustup toolchain install stable --profile minimal -t ${{ matrix.target }}
+          rustup default stable
+          uname -smr
+          rustc --version
+
+      # zigbuild supplies the musl sysroot and linker for both Linux targets,
+      # so the x86_64 runner can cross-compile to aarch64 without `cross`.
+      - name: Install zig + cargo-zigbuild
+        if: endsWith(matrix.target, '-linux-musl')
+        run: |
+          # cargo-zigbuild falls back to `python3 -m ziglang` when no `zig`
+          # binary is on PATH, so the pip package is enough.
+          pip3 install ziglang==0.13.0
+          python3 -m ziglang version
+          cargo install --locked cargo-zigbuild
+
+      - name: Build (darwin)
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: cargo build --manifest-path agt/Cargo.toml --locked --release --target ${{ matrix.target }}
+
+      - name: Build (linux, zigbuild)
+        if: endsWith(matrix.target, '-linux-musl')
+        run: cargo zigbuild --manifest-path agt/Cargo.toml --locked --release --target ${{ matrix.target }}
+
+      - name: Stage outputs
+        env:
+          RELEASE_VERSION: ${{ needs.validate-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp agt/target/${{ matrix.target }}/release/agt out/agt
+          file out/agt
+          if [ "${{ matrix.native }}" = "true" ]; then
+            version_output="$(out/agt --version)"
+            if [ "$version_output" != "agt $RELEASE_VERSION" ]; then
+              echo "Binary version mismatch: expected 'agt $RELEASE_VERSION', got '$version_output'" >&2
+              exit 1
+            fi
+          else
+            echo "Skipping executable version check for cross-built ${{ matrix.target }}."
+          fi
+          tar -C out -czf "out/agt-${{ matrix.target }}.tar.gz" agt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agt-${{ matrix.platform }}
+          path: |
+            out/agt
+            out/agt-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-npm:
+    needs: [validate-version, build]
+    runs-on: ubuntu-latest
+    if: ${{ needs.validate-version.outputs.should_publish == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agt-*
+          path: dl
+
+      - name: Stage binaries into platform packages
+        run: |
+          set -euo pipefail
+          # upload-artifact@v4 strips the common path prefix from the uploaded
+          # list, so `out/agt` lands at `dl/agt-<platform>/agt`.
+          for p in darwin-arm64 linux-x64 linux-arm64; do
+            mkdir -p "npm/platforms/$p/bin"
+            install -m 0755 "dl/agt-$p/agt" "npm/platforms/$p/bin/agt"
+          done
+          ls -la npm/platforms/*/bin/agt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Configure npm auth
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN secret is not set on this repository" >&2
+            exit 1
+          fi
+          # Granular access tokens (npm_mc... prefix) lack the user:read scope
+          # `npm whoami` needs, so the readback 401s even though publish works.
+          # Skip the check; `npm publish` surfaces real auth errors.
+          umask 077
+          printf '//registry.npmjs.org/:_authToken=%s\nalways-auth=true\n' \
+            "$NODE_AUTH_TOKEN" > ~/.npmrc
+
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_VERSION: ${{ needs.validate-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          V="$RELEASE_VERSION"
+          for p in linux-x64 linux-arm64 darwin-arm64; do
+            PKG="@open330/agt-$p"
+            if npm view "$PKG@$V" version >/dev/null 2>&1; then
+              echo "↩ skip $PKG@$V (already on registry)"
+            else
+              (cd "npm/platforms/$p" && npm publish --access public)
+            fi
+          done
+
+      - name: Publish wrapper package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_VERSION: ${{ needs.validate-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          V="$RELEASE_VERSION"
+          if npm view "@open330/agt@$V" version >/dev/null 2>&1; then
+            echo "↩ skip @open330/agt@$V (already on registry)"
+          else
+            (cd npm && npm publish --access public)
+          fi
+
+      - name: Verify published platforms match optionalDependencies
+        # Registry CDN can lag a few seconds after publish; retry with backoff
+        # before declaring failure.
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if node npm/scripts/verify-platform-packages.js; then
+              exit 0
+            fi
+            echo "verify attempt $i failed; waiting 10s for npm CDN propagation..."
+            sleep 10
+          done
+          exit 1
+
+  # Attach the tarballs to the GitHub release for people who install the
+  # binary directly instead of through npm.
+  github-release:
+    needs: [validate-version, build, publish-npm]
+    runs-on: ubuntu-latest
+    if: ${{ needs.validate-version.outputs.should_publish == 'true' }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agt-*
+          path: dl
+
+      - name: Collect tarballs
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          cp dl/*/*.tar.gz release/
+          ls -la release/
+
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.validate-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v$RELEASE_VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; uploading assets."
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" release/*.tar.gz --clobber
+
+      - name: Verify release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.validate-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v$RELEASE_VERSION"
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name' | sort)"
+          echo "$assets"
+          for target in aarch64-apple-darwin x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            if ! grep -qx "agt-$target.tar.gz" <<<"$assets"; then
+              echo "Missing release asset: agt-$target.tar.gz" >&2
+              exit 1
+            fi
+          done

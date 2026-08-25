@@ -1,4 +1,4 @@
-.PHONY: build release test clean publish-local
+.PHONY: build release test clean publish-local fmt lint check-versions ci
 
 # Dev build
 build:
@@ -10,7 +10,22 @@ release:
 
 # Run tests
 test:
-	cd agt && cargo test
+	cd agt && cargo test --locked
+
+# Format sources in place
+fmt:
+	cd agt && cargo fmt --all
+
+# Same gates the GitHub Actions CI workflow runs
+lint:
+	cd agt && cargo fmt --all --check
+	cd agt && cargo clippy --locked --all-targets -- -D warnings
+
+# Verify Cargo/npm manifests agree on the release version
+check-versions:
+	bash scripts/check-versions.sh
+
+ci: lint test check-versions
 
 # Clean build artifacts
 clean:
