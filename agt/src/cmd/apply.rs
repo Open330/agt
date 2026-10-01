@@ -407,7 +407,10 @@ pub fn execute(only: Option<&str>, dry_run: bool, check: bool) -> Result<()> {
         if target.path == "global" && !dry_run {
             for source in cfg.static_sources(&target.stack)? {
                 let source_dir = cfg.source_dir(&source)?;
-                if let Err(e) = super::skill::run_manifest_setup(&source_dir) {
+                if let Err(e) = super::skill::run_manifest_setup(
+                    &source_dir,
+                    super::skill::ManifestSource::TrustedLocal,
+                ) {
                     ui::warn(&format!("Static files from '{source}': {e}"));
                 }
             }

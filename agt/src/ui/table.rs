@@ -1,5 +1,5 @@
-use comfy_table::{Cell, ContentArrangement, Table};
 use comfy_table::presets::UTF8_HORIZONTAL_ONLY;
+use comfy_table::{Cell, ContentArrangement, Table};
 
 pub fn new_table() -> Table {
     let mut table = Table::new();

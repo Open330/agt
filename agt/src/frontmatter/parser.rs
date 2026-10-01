@@ -18,10 +18,18 @@ where
         }
 
         fn visit_str<E: de::Error>(self, s: &str) -> std::result::Result<Self::Value, E> {
-            Ok(Some(s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()))
+            Ok(Some(
+                s.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            ))
         }
 
-        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error> {
+        fn visit_seq<A: de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> std::result::Result<Self::Value, A::Error> {
             let mut v = Vec::new();
             while let Some(s) = seq.next_element::<String>()? {
                 v.push(s);
@@ -51,7 +59,11 @@ pub struct Frontmatter {
     pub kind: Option<String>,
     #[serde(default, deserialize_with = "string_or_vec")]
     pub tags: Option<Vec<String>>,
-    #[serde(rename = "trigger-keywords", default, deserialize_with = "string_or_vec")]
+    #[serde(
+        rename = "trigger-keywords",
+        default,
+        deserialize_with = "string_or_vec"
+    )]
     pub trigger_keywords: Option<Vec<String>>,
     #[serde(rename = "allowed-tools")]
     #[allow(dead_code)]

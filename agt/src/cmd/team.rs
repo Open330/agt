@@ -1,4 +1,4 @@
-use crate::{config, ui};
+use crate::{config, ui, util};
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use colored::Colorize;
@@ -6,6 +6,7 @@ use comfy_table::Cell;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Subcommand)]
@@ -155,14 +156,17 @@ fn list(json_output: bool) -> Result<()> {
     }
 
     let mut table = ui::table::new_table();
-    table.set_header(&["Name", "Description", "Teammates", "Tasks"]);
+    table.set_header(["Name", "Description", "Teammates", "Tasks"]);
     for (name, template) in &templates {
-        ui::table::add_row(&mut table, &[
-            name,
-            &template.description,
-            &template.teammates.len().to_string(),
-            &template.tasks.len().to_string(),
-        ]);
+        ui::table::add_row(
+            &mut table,
+            &[
+                name,
+                &template.description,
+                &template.teammates.len().to_string(),
+                &template.tasks.len().to_string(),
+            ],
+        );
     }
     println!("{table}");
 
@@ -181,13 +185,16 @@ fn show(name: &str) -> Result<()> {
     ui::section(&template.name);
 
     let mut info = ui::table::new_table();
-    info.set_header(&["Property", "Value"]);
+    info.set_header(["Property", "Value"]);
     ui::table::add_row(&mut info, &["Description", &template.description]);
     ui::table::add_row(&mut info, &["Display mode", &template.teammate_mode]);
-    ui::table::add_row(&mut info, &[
-        "Plan approval",
-        if template.plan_approval { "yes" } else { "no" },
-    ]);
+    ui::table::add_row(
+        &mut info,
+        &[
+            "Plan approval",
+            if template.plan_approval { "yes" } else { "no" },
+        ],
+    );
     if !template.skills.is_empty() {
         ui::table::add_row(&mut info, &["Required skills", &template.skills.join(", ")]);
     }
@@ -196,13 +203,16 @@ fn show(name: &str) -> Result<()> {
     if !template.teammates.is_empty() {
         println!("\n{}", "Teammates".bold());
         let mut t = ui::table::new_table();
-        t.set_header(&["#", "Role", "Description"]);
+        t.set_header(["#", "Role", "Description"]);
         for (i, m) in template.teammates.iter().enumerate() {
-            ui::table::add_row_cells(&mut t, vec![
-                Cell::new(&(i + 1).to_string()),
-                Cell::new(&m.role),
-                Cell::new(&m.description),
-            ]);
+            ui::table::add_row_cells(
+                &mut t,
+                vec![
+                    Cell::new((i + 1).to_string()),
+                    Cell::new(&m.role),
+                    Cell::new(&m.description),
+                ],
+            );
         }
         println!("{t}");
     }
@@ -210,14 +220,17 @@ fn show(name: &str) -> Result<()> {
     if !template.tasks.is_empty() {
         println!("\n{}", "Initial tasks".bold());
         let mut t = ui::table::new_table();
-        t.set_header(&["#", "Title", "Assignee"]);
+        t.set_header(["#", "Title", "Assignee"]);
         for (i, task) in template.tasks.iter().enumerate() {
             let assignee = task.assignee.as_deref().unwrap_or("unassigned");
-            ui::table::add_row_cells(&mut t, vec![
-                Cell::new(&(i + 1).to_string()),
-                Cell::new(&task.title),
-                Cell::new(assignee),
-            ]);
+            ui::table::add_row_cells(
+                &mut t,
+                vec![
+                    Cell::new((i + 1).to_string()),
+                    Cell::new(&task.title),
+                    Cell::new(assignee),
+                ],
+            );
         }
         println!("{t}");
     }
@@ -225,13 +238,10 @@ fn show(name: &str) -> Result<()> {
     if !template.hooks.is_empty() {
         println!("\n{}", "Hooks".bold());
         let mut t = ui::table::new_table();
-        t.set_header(&["Event", "Type"]);
+        t.set_header(["Event", "Type"]);
         for (event, hooks) in &template.hooks {
             for h in hooks {
-                ui::table::add_row_cells(&mut t, vec![
-                    Cell::new(event),
-                    Cell::new(&h.hook_type),
-                ]);
+                ui::table::add_row_cells(&mut t, vec![Cell::new(event), Cell::new(&h.hook_type)]);
             }
         }
         println!("{t}");
@@ -291,10 +301,7 @@ fn create(
             ));
         }
         if !mate.skills.is_empty() {
-            prompt.push_str(&format!(
-                "Required skills: {}\n",
-                mate.skills.join(", ")
-            ));
+            prompt.push_str(&format!("Required skills: {}\n", mate.skills.join(", ")));
         }
         if mate.plan_approval {
             prompt.push_str("Require plan approval before making changes.\n");
@@ -305,15 +312,17 @@ fn create(
     if !template.tasks.is_empty() {
         prompt.push_str("## Initial Task List\n\n");
         for (i, task) in template.tasks.iter().enumerate() {
-            prompt.push_str(&format!("{}. **{}**: {}\n", i + 1, task.title, task.description));
+            prompt.push_str(&format!(
+                "{}. **{}**: {}\n",
+                i + 1,
+                task.title,
+                task.description
+            ));
             if let Some(ref assignee) = task.assignee {
                 prompt.push_str(&format!("   Assign to: {}\n", assignee));
             }
             if !task.depends_on.is_empty() {
-                prompt.push_str(&format!(
-                    "   Depends on: {}\n",
-                    task.depends_on.join(", ")
-                ));
+                prompt.push_str(&format!("   Depends on: {}\n", task.depends_on.join(", ")));
             }
         }
         prompt.push('\n');
@@ -363,7 +372,10 @@ fn create(
 
 fn enable() -> Result<()> {
     set_teams_setting(true)?;
-    ui::success(&format!("Agent teams enabled in {}", config::claude_settings_path().display()));
+    ui::success(&format!(
+        "Agent teams enabled in {}",
+        config::claude_settings_path().display()
+    ));
     ui::info("Set env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = \"1\"");
     eprintln!();
     ui::info("Restart Claude Code for the change to take effect.");
@@ -373,29 +385,25 @@ fn enable() -> Result<()> {
 
 fn disable() -> Result<()> {
     set_teams_setting(false)?;
-    ui::success(&format!("Agent teams disabled in {}", config::claude_settings_path().display()));
+    ui::success(&format!(
+        "Agent teams disabled in {}",
+        config::claude_settings_path().display()
+    ));
     Ok(())
 }
 
 fn set_teams_setting(enabled: bool) -> Result<()> {
     let settings_path = config::claude_settings_path();
+    set_teams_setting_at(&settings_path, enabled)
+}
 
-    let mut settings: serde_json::Value = if settings_path.exists() {
-        let content = fs::read_to_string(&settings_path)?;
-        serde_json::from_str(&content)?
-    } else {
-        if let Some(parent) = settings_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        serde_json::json!({})
-    };
+fn set_teams_setting_at(settings_path: &Path, enabled: bool) -> Result<()> {
+    let mut settings = read_team_settings(settings_path)?.unwrap_or_else(|| serde_json::json!({}));
 
     let obj = settings.as_object_mut().unwrap();
 
     if enabled {
-        let env_obj = obj
-            .entry("env")
-            .or_insert_with(|| serde_json::json!({}));
+        let env_obj = obj.entry("env").or_insert_with(|| serde_json::json!({}));
         env_obj.as_object_mut().unwrap().insert(
             "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS".to_string(),
             serde_json::json!("1"),
@@ -409,9 +417,7 @@ fn set_teams_setting(enabled: bool) -> Result<()> {
         }
     }
 
-    let content = serde_json::to_string_pretty(&settings)?;
-    fs::write(&settings_path, content)?;
-    Ok(())
+    write_team_settings(settings_path, &settings)
 }
 
 // ── Status ────────────────────────────────────────────────────────
@@ -437,11 +443,7 @@ fn status() -> Result<()> {
         "Teammate mode:".bold(),
         mode.unwrap_or_else(|| "auto (default)".to_string()).cyan()
     );
-    eprintln!(
-        "  {} {}",
-        "Templates available:".bold(),
-        templates.len()
-    );
+    eprintln!("  {} {}", "Templates available:".bold(), templates.len());
 
     // Check for active teams
     let teams_dir = config::global_team_target();
@@ -478,9 +480,6 @@ fn status() -> Result<()> {
 // ── Init ──────────────────────────────────────────────────────────
 
 fn init(from: Option<String>) -> Result<()> {
-    let project_teams_dir = PathBuf::from(".claude/teams");
-    fs::create_dir_all(&project_teams_dir)?;
-
     let template = if let Some(ref name) = from {
         load_template(name)?
     } else {
@@ -518,23 +517,46 @@ fn init(from: Option<String>) -> Result<()> {
         }
     };
 
-    let filename = format!("{}.yml", template.name);
-    let target = project_teams_dir.join(&filename);
-
-    if target.exists() {
-        bail!(
-            "Team template already exists: {}\nEdit it directly or remove first.",
-            target.display()
-        );
-    }
-
-    let yaml = serde_yaml::to_string(&template)?;
-    fs::write(&target, yaml)?;
+    let target = write_project_team_template(Path::new("."), &template)?;
 
     ui::success(&format!("Created team template: {}", target.display()));
     ui::info("Edit the file to customize teammates, tasks, and hooks.");
     ui::info(&format!("Then run: agt team create {}", template.name));
     Ok(())
+}
+
+fn write_project_team_template(project_root: &Path, template: &TeamTemplate) -> Result<PathBuf> {
+    validate_team_template_name(&template.name)?;
+
+    ensure_existing_directory_is_not_symlink(project_root, "project root")?;
+    let claude_dir = project_root.join(".claude");
+    ensure_directory_component(&claude_dir, ".claude directory")?;
+    let project_teams_dir = claude_dir.join("teams");
+    ensure_directory_component(&project_teams_dir, "project team template directory")?;
+
+    let filename = format!("{}.yml", template.name);
+    let target = project_teams_dir.join(&filename);
+
+    let yaml = serde_yaml::to_string(&template)?;
+    let mut file = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => bail!(
+            "Team template already exists: {}\nEdit it directly or remove first.",
+            target.display()
+        ),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Cannot create team template {}", target.display()))
+        }
+    };
+    file.write_all(yaml.as_bytes())
+        .with_context(|| format!("Cannot write team template {}", target.display()))?;
+
+    Ok(target)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -544,36 +566,110 @@ fn load_all_templates() -> Result<BTreeMap<String, TeamTemplate>> {
 
     // 1. Bundled templates from source dir
     if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
-        load_templates_from_dir(&source_dir.join("teams"), &mut templates);
+        load_templates_from_dir(&source_dir.join("teams"), &mut templates)?;
     }
 
     // 2. Global user templates
     let global_dir = config::global_team_target();
-    load_templates_from_dir(&global_dir, &mut templates);
+    load_templates_from_dir(&global_dir, &mut templates)?;
 
     // 3. Project-local templates (highest priority)
     let local_dir = PathBuf::from(".claude/teams");
-    load_templates_from_dir(&local_dir, &mut templates);
+    load_templates_from_dir(&local_dir, &mut templates)?;
 
     Ok(templates)
 }
 
-fn load_templates_from_dir(dir: &Path, templates: &mut BTreeMap<String, TeamTemplate>) {
-    if !dir.exists() {
-        return;
-    }
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let ext = path.extension().and_then(|e| e.to_str());
-            if ext == Some("yml") || ext == Some("yaml") {
-                if let Ok(content) = fs::read_to_string(&path) {
-                    if let Ok(template) = serde_yaml::from_str::<TeamTemplate>(&content) {
-                        templates.insert(template.name.clone(), template);
-                    }
-                }
-            }
+fn load_templates_from_dir(
+    dir: &Path,
+    templates: &mut BTreeMap<String, TeamTemplate>,
+) -> Result<()> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("Failed to read team template directory {}", dir.display())
+            })
         }
+    };
+
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!(
+                "Failed to read an entry in team template directory {}",
+                dir.display()
+            )
+        })?;
+        let path = entry.path();
+        let ext = path.extension().and_then(|e| e.to_str());
+        if ext == Some("yml") || ext == Some("yaml") {
+            let content = match fs::read_to_string(&path) {
+                Ok(content) => content,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("Failed to read team template {}", path.display())
+                    })
+                }
+            };
+            let template = serde_yaml::from_str::<TeamTemplate>(&content)
+                .with_context(|| format!("Invalid team template YAML: {}", path.display()))?;
+            validate_team_template_name(&template.name).with_context(|| {
+                format!(
+                    "Invalid team template name in {}: {:?}",
+                    path.display(),
+                    template.name
+                )
+            })?;
+            templates.insert(template.name.clone(), template);
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_team_template_name(name: &str) -> Result<()> {
+    util::validate_name(name).context("Invalid team template name")?;
+
+    let mut components = Path::new(name).components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(component)), None) if component == name => Ok(()),
+        _ => bail!(
+            "Invalid team template name {:?}: expected one safe path component",
+            name
+        ),
+    }
+}
+
+fn ensure_existing_directory_is_not_symlink(path: &Path, description: &str) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("Cannot inspect {}: {}", description, path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!(
+            "Unsafe {} {}: expected a non-symlinked directory",
+            description,
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn ensure_directory_component(path: &Path, description: &str) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => bail!(
+            "Unsafe {} {}: expected a non-symlinked directory",
+            description,
+            path.display()
+        ),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(path)
+                .with_context(|| format!("Cannot create {}: {}", description, path.display()))?;
+            ensure_existing_directory_is_not_symlink(path, description)
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("Cannot inspect {}: {}", description, path.display())),
     }
 }
 
@@ -601,12 +697,13 @@ fn load_template(name: &str) -> Result<TeamTemplate> {
 
 fn is_teams_enabled() -> Result<bool> {
     let settings_path = config::claude_settings_path();
-    if !settings_path.exists() {
-        return Ok(false);
-    }
-    let content = fs::read_to_string(&settings_path)?;
-    let settings: serde_json::Value = serde_json::from_str(&content)?;
+    is_teams_enabled_at(&settings_path)
+}
 
+fn is_teams_enabled_at(settings_path: &Path) -> Result<bool> {
+    let Some(settings) = read_team_settings(settings_path)? else {
+        return Ok(false);
+    };
     Ok(settings
         .get("env")
         .and_then(|e| e.get("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"))
@@ -617,14 +714,245 @@ fn is_teams_enabled() -> Result<bool> {
 
 fn get_teammate_mode() -> Result<Option<String>> {
     let settings_path = config::claude_settings_path();
-    if !settings_path.exists() {
+    let Some(settings) = read_team_settings(&settings_path)? else {
         return Ok(None);
-    }
-    let content = fs::read_to_string(&settings_path)?;
-    let settings: serde_json::Value = serde_json::from_str(&content)?;
+    };
 
     Ok(settings
         .get("teammateMode")
         .and_then(|v| v.as_str())
         .map(String::from))
+}
+
+fn read_team_settings(settings_path: &Path) -> Result<Option<serde_json::Value>> {
+    if !settings_path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(settings_path)
+        .with_context(|| format!("Cannot read Claude settings: {}", settings_path.display()))?;
+    let settings = serde_json::from_str(&content)
+        .with_context(|| format!("Invalid Claude settings JSON: {}", settings_path.display()))?;
+    validate_team_settings_shape(&settings, settings_path)?;
+    Ok(Some(settings))
+}
+
+fn validate_team_settings_shape(settings: &serde_json::Value, settings_path: &Path) -> Result<()> {
+    let root = settings.as_object().with_context(|| {
+        format!(
+            "Invalid Claude settings at {}: expected the root value to be an object",
+            settings_path.display()
+        )
+    })?;
+    if let Some(env) = root.get("env") {
+        if !env.is_object() {
+            bail!(
+                "Invalid Claude settings at {}: expected 'env' to be an object",
+                settings_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn write_team_settings(settings_path: &Path, settings: &serde_json::Value) -> Result<()> {
+    config::write_json_atomically(settings_path, settings)
+        .with_context(|| format!("Cannot write Claude settings: {}", settings_path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn template(name: &str, description: &str) -> TeamTemplate {
+        TeamTemplate {
+            name: name.to_string(),
+            description: description.to_string(),
+            teammates: Vec::new(),
+            tasks: Vec::new(),
+            skills: Vec::new(),
+            hooks: BTreeMap::new(),
+            teammate_mode: default_teammate_mode(),
+            plan_approval: false,
+        }
+    }
+
+    #[test]
+    fn malformed_local_template_does_not_fall_back_to_lower_priority_template() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("review.yml");
+        fs::write(&path, "name: review\ndescription: [\n").unwrap();
+
+        let mut templates =
+            BTreeMap::from([("review".to_string(), template("review", "lower priority"))]);
+        let error = load_templates_from_dir(temp.path(), &mut templates).unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("Invalid team template YAML"));
+        assert!(message.contains(&path.display().to_string()));
+    }
+
+    #[test]
+    fn malformed_root_or_env_settings_fail_before_team_settings_mutation() {
+        let cases = [
+            (serde_json::json!([]), "root"),
+            (serde_json::json!({ "env": "invalid" }), "env"),
+        ];
+
+        for (settings_value, expected_context) in cases {
+            let temp = tempfile::TempDir::new().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let original_settings = settings_value.to_string();
+            fs::write(&settings_path, &original_settings).unwrap();
+
+            let enable_error = set_teams_setting_at(&settings_path, true).unwrap_err();
+            let enable_message = format!("{enable_error:#}");
+            assert!(
+                enable_message.contains(expected_context),
+                "{enable_message}"
+            );
+            assert!(
+                enable_message.contains(&settings_path.display().to_string()),
+                "{enable_message}"
+            );
+            assert_eq!(
+                fs::read_to_string(&settings_path).unwrap(),
+                original_settings
+            );
+
+            let status_error = is_teams_enabled_at(&settings_path).unwrap_err();
+            let status_message = format!("{status_error:#}");
+            assert!(
+                status_message.contains(expected_context),
+                "{status_message}"
+            );
+            assert_eq!(
+                fs::read_to_string(&settings_path).unwrap(),
+                original_settings
+            );
+        }
+    }
+
+    #[test]
+    fn team_setting_updates_preserve_unrelated_root_and_env_keys() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        fs::write(
+            &settings_path,
+            r#"{"theme":"dark","teammateMode":"tmux","env":{"KEEP":"yes"}}"#,
+        )
+        .unwrap();
+
+        set_teams_setting_at(&settings_path, true).unwrap();
+        assert!(is_teams_enabled_at(&settings_path).unwrap());
+        let enabled: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(enabled["theme"], "dark");
+        assert_eq!(enabled["teammateMode"], "tmux");
+        assert_eq!(enabled["env"]["KEEP"], "yes");
+        assert_eq!(enabled["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"], "1");
+
+        set_teams_setting_at(&settings_path, false).unwrap();
+        assert!(!is_teams_enabled_at(&settings_path).unwrap());
+        let disabled: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(settings_path).unwrap()).unwrap();
+        assert_eq!(disabled["theme"], "dark");
+        assert_eq!(disabled["teammateMode"], "tmux");
+        assert_eq!(disabled["env"], serde_json::json!({ "KEEP": "yes" }));
+    }
+
+    #[test]
+    fn template_names_must_be_safe_single_components() {
+        for unsafe_name in ["", "..", "../escape", "/tmp/escape", r"..\escape"] {
+            let error = validate_team_template_name(unsafe_name).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("Invalid team template name"),
+                "unexpected error for {unsafe_name:?}: {error:#}"
+            );
+        }
+
+        validate_team_template_name("safe-team_1").unwrap();
+    }
+
+    #[test]
+    fn loaded_template_with_unsafe_name_is_rejected_before_insertion() {
+        let temp = tempfile::TempDir::new().unwrap();
+        fs::write(
+            temp.path().join("escape.yml"),
+            "name: ../escape\ndescription: unsafe\n",
+        )
+        .unwrap();
+
+        let mut templates = BTreeMap::new();
+        let error = load_templates_from_dir(temp.path(), &mut templates).unwrap_err();
+        assert!(format!("{error:#}").contains("Invalid team template name"));
+        assert!(templates.is_empty());
+    }
+
+    #[test]
+    fn project_team_template_is_an_immediate_child_and_does_not_clobber() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let valid = template("review-team", "valid");
+
+        let target = write_project_team_template(temp.path(), &valid).unwrap();
+        assert_eq!(target, temp.path().join(".claude/teams/review-team.yml"));
+        let original = fs::read_to_string(&target).unwrap();
+
+        let error = write_project_team_template(temp.path(), &valid).unwrap_err();
+        assert!(format!("{error:#}").contains("already exists"));
+        assert_eq!(fs::read_to_string(target).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_team_template_rejects_symlinked_root_and_intermediates() {
+        use std::os::unix::fs::symlink;
+
+        for linked_component in ["root", ".claude", "teams"] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let outside = temp.path().join("outside");
+            fs::create_dir(&outside).unwrap();
+            let sentinel = outside.join("sentinel");
+            fs::write(&sentinel, "unchanged").unwrap();
+
+            let project = temp.path().join("project");
+            fs::create_dir(&project).unwrap();
+            let root = if linked_component == "root" {
+                let linked_root = temp.path().join("linked-project");
+                symlink(&outside, &linked_root).unwrap();
+                linked_root
+            } else {
+                let claude = project.join(".claude");
+                if linked_component == ".claude" {
+                    symlink(&outside, &claude).unwrap();
+                } else {
+                    fs::create_dir(&claude).unwrap();
+                    symlink(&outside, claude.join("teams")).unwrap();
+                }
+                project
+            };
+
+            let error = write_project_team_template(&root, &template("safe", "valid")).unwrap_err();
+            assert!(format!("{error:#}").contains("non-symlinked directory"));
+            assert_eq!(fs::read_to_string(&sentinel).unwrap(), "unchanged");
+            assert!(!outside.join("safe.yml").exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_team_template_rejects_symlinked_final_without_touching_outside() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let teams = temp.path().join(".claude/teams");
+        fs::create_dir_all(&teams).unwrap();
+        let sentinel = temp.path().join("outside.yml");
+        fs::write(&sentinel, "unchanged").unwrap();
+        symlink(&sentinel, teams.join("safe.yml")).unwrap();
+
+        let error =
+            write_project_team_template(temp.path(), &template("safe", "valid")).unwrap_err();
+        assert!(format!("{error:#}").contains("already exists"));
+        assert_eq!(fs::read_to_string(sentinel).unwrap(), "unchanged");
+    }
 }

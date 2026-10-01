@@ -1,11 +1,13 @@
+mod layers;
 mod manifest;
 mod paths;
-mod layers;
 mod profiles;
+mod settings;
 mod state;
 
+pub use layers::*;
 pub use manifest::*;
 pub use paths::*;
-pub use layers::*;
 pub use profiles::*;
+pub(crate) use settings::write_json_atomically;
 pub use state::*;

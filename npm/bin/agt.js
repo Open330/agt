@@ -33,8 +33,20 @@ if (!binary || !require("fs").existsSync(binary)) {
 try {
   execFileSync(binary, process.argv.slice(2), { stdio: "inherit" });
 } catch (e) {
-  if (e.status !== undefined) {
+  if (typeof e.status === "number") {
     process.exit(e.status);
+  }
+  if (e.signal) {
+    try {
+      process.kill(process.pid, e.signal);
+      process.exitCode = 1;
+      return;
+    } catch (signalError) {
+      console.error(
+        `Failed to propagate ${e.signal} after agt terminated: ${signalError.message}`
+      );
+      process.exit(1);
+    }
   }
   console.error(`Failed to run agt: ${e.message}`);
   process.exit(1);

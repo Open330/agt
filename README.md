@@ -1,5 +1,7 @@
 # agt
 
+[![CI](https://github.com/Open330/agt/actions/workflows/ci.yml/badge.svg)](https://github.com/Open330/agt/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/%40open330%2Fagt?logo=npm)](https://www.npmjs.com/package/@open330/agt) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 `agt` is a Rust CLI for installing and running skills, personas, hooks, and
 multi-agent workflows across Claude Code and Codex.
 
@@ -199,3 +201,6 @@ and uploads matching GitHub Release tarballs. Release versions use the
 ## License
 
 MIT
+
+---
+<p align="center"><sub>Part of <a href="https://github.com/Open330">Open330</a> · open source tools for AI-agent workflows · <a href="https://open330.github.io">open330.github.io</a></sub></p>

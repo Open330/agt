@@ -22,10 +22,7 @@ impl std::fmt::Display for LlmCli {
 /// Check if a command exists by scanning PATH directories (no subprocess spawn)
 fn command_exists(cmd: &str) -> bool {
     std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths)
-                .any(|dir| dir.join(cmd).is_file())
-        })
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(cmd).is_file()))
         .unwrap_or(false)
 }
 
@@ -37,7 +34,10 @@ pub fn parse_cli(name: &str) -> anyhow::Result<LlmCli> {
         "opencode" => Ok(LlmCli::OpenCode),
         "gemini" => Ok(LlmCli::Gemini),
         "ollama" => Ok(LlmCli::Ollama),
-        _ => anyhow::bail!("Unknown LLM: '{}'. Options: claude, codex, opencode, gemini, ollama", name),
+        _ => anyhow::bail!(
+            "Unknown LLM: '{}'. Options: claude, codex, opencode, gemini, ollama",
+            name
+        ),
     }
 }
 

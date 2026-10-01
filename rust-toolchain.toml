@@ -1,0 +1,7 @@
+# Pinned so `make ci` locally and the GitHub Actions CI gate run the exact
+# same lints. A floating `stable` meant a newly stabilized clippy lint could
+# fail CI on a tree that was green on an older local toolchain.
+# Bump deliberately, in its own commit, after `make ci` passes on the new one.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
