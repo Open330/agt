@@ -31,12 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--no-static` on `agt skill install` skips the source repo's `[[setup.copy]]`
   rules.
 - Global `--claude-dir <dir>` option.
+- `agt skill status [--global] [--json]` lists what agt installed in a skills
+  directory with its layer and source, plus unmanaged and missing entries and
+  any skills still in the old grouped layout. Installs and uninstalls record
+  this in `agt-state.json` beside the skills directory.
 - Profiles can `extends: <name>` or `extends: [a, b]` (same source; cycles are
   an error), and `--profile` accepts a comma list such as `core,dev`.
 - `agt skill` 명령의 `--agent codex` 설치·조회·제거·업데이트 지원
 - 원격 저장소의 프로필을 바로 설치하는 `--from <repo> --profile <name>` 조합
 
 ### Fixed
+- `agt skill uninstall <name>` removes the skill of that name instead of a
+  same-named virtual group (e.g. a skill called `other`).
 - Extra profile `*.yml` files merge in sorted order, so a profile defined twice
   resolves the same way everywhere.
 - The built-in `core` profile no longer lists the retired `context-manager`.

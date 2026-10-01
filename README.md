@@ -61,6 +61,10 @@ agt skill migrate --global --dry-run   # preview
 agt skill migrate --global
 ```
 
+`agt skill status --global` shows each installed skill with the profile it came
+from (recorded in `agt-state.json` next to the skills directory) and flags
+entries agt did not install.
+
 Use `--claude-dir <dir>` (or `CLAUDE_CONFIG_DIR`) to target a Claude config
 directory other than `~/.claude`; it applies to skills, hooks, teams and
 `settings.json`.

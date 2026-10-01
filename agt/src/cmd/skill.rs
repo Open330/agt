@@ -35,6 +35,19 @@ pub enum SkillAction {
         #[arg(long)]
         no_static: bool,
     },
+    /// Show what agt installed in a skills directory, from which layer, and
+    /// what it did not install (unmanaged) or lost (missing)
+    Status {
+        /// Inspect the global skill directory instead of the project one
+        #[arg(short, long)]
+        global: bool,
+        /// Agent whose skill directory should be inspected
+        #[arg(long, value_enum, default_value_t)]
+        agent: config::SkillAgent,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Move skills that older agt installed under <group>/<skill> to the flat
     /// <skill> layout that Claude Code actually loads
     Migrate {
@@ -143,6 +156,11 @@ pub fn execute(action: SkillAction) -> Result<()> {
             install(name, global, agent, force, profile_name, from, !no_static)
         }
         SkillAction::Migrate { global, dry_run } => migrate(global, dry_run),
+        SkillAction::Status {
+            global,
+            agent,
+            json,
+        } => status(global, agent, json),
         SkillAction::Uninstall {
             name,
             global,
@@ -253,6 +271,18 @@ fn install(
         link_path.display(),
         skill_path.display()
     ))?;
+    record_installed(
+        &target_dir,
+        vec![(
+            name.clone(),
+            skill_record(
+                "manual",
+                source_dir.display().to_string(),
+                format!("{group}/{name}"),
+                config::InstallMode::Symlink,
+            ),
+        )],
+    )?;
 
     let scope = if global { "global" } else { "local" };
     ui::success(&format!(
@@ -319,6 +349,18 @@ fn install_remote(
 
     util::copy_dir_recursive(&source_path, &dest)?;
     remote::write_metadata(&dest, &spec)?;
+    record_installed(
+        &target_dir,
+        vec![(
+            skill_name.clone(),
+            skill_record(
+                "manual",
+                format!("{}/{}", spec.owner, spec.repo),
+                spec.path.clone(),
+                config::InstallMode::Copy,
+            ),
+        )],
+    )?;
 
     let scope = if global { "global" } else { "local" };
     let installed_name = if group.is_empty() {
@@ -446,6 +488,7 @@ fn install_remote_repo(
 
     let mut installed = 0;
     let mut skipped = 0;
+    let mut recorded = Vec::new();
     let local_dir = config::skill_target(false, agent);
     let global_dir = config::skill_target(true, agent);
 
@@ -488,12 +531,22 @@ fn install_remote_repo(
             git_ref: spec.git_ref.clone(),
         };
         remote::write_metadata(&dest, &skill_spec)?;
+        recorded.push((
+            skill_name.clone(),
+            skill_record(
+                profile.unwrap_or("manual"),
+                format!("{}/{}", spec.owner, spec.repo),
+                skill_spec.path.clone(),
+                config::InstallMode::Copy,
+            ),
+        ));
         ui::success(&format!(
             "Installed skill '{}/{}' ({}, {})",
             group, skill_name, scope, agent
         ));
         installed += 1;
     }
+    record_installed(&target_dir, recorded)?;
 
     ui::success(&format!(
         "Done: {} installed, {} skipped from {}/{}",
@@ -621,9 +674,11 @@ fn uninstall(name: &str, global: bool, agent: config::SkillAgent) -> Result<()> 
         return uninstall_group(&group_dir, name, scope);
     }
 
-    // Check if name matches a virtual group (e.g. "other" — flat skills with inferred group)
+    // Check if name matches a virtual group (e.g. "other" — flat skills with inferred group).
+    // An installed skill with exactly this name wins over a group of the same name.
+    let is_skill = target_dir.join(name).join("SKILL.md").exists();
     let virtual_skills = find_virtual_group_skills(&target_dir, name);
-    if !virtual_skills.is_empty() {
+    if !is_skill && !virtual_skills.is_empty() {
         return uninstall_virtual_group(&virtual_skills, name, scope);
     }
 
@@ -642,6 +697,9 @@ fn uninstall(name: &str, global: bool, agent: config::SkillAgent) -> Result<()> 
         if parent != target_dir {
             let _ = fs::remove_dir(parent);
         }
+    }
+    if let Some(file_name) = skill_path.file_name() {
+        forget_installed(&target_dir, &[file_name.to_string_lossy().to_string()])?;
     }
 
     ui::success(&format!(
@@ -690,6 +748,9 @@ fn uninstall_group(group_dir: &Path, group_name: &str, scope: &str) -> Result<()
         ui::success(&format!("Uninstalled skill '{}/{}' ({})", group_name, s, scope));
     }
     let _ = fs::remove_dir(group_dir);
+    if let Some(target_dir) = group_dir.parent() {
+        forget_installed(target_dir, &skills)?;
+    }
     Ok(())
 }
 
@@ -748,6 +809,7 @@ fn uninstall_virtual_group(skills: &[PathBuf], group_name: &str, scope: &str) ->
         }
     }
 
+    let mut removed = Vec::new();
     for path in skills {
         let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
         if path.is_symlink() || path.is_file() {
@@ -756,6 +818,10 @@ fn uninstall_virtual_group(skills: &[PathBuf], group_name: &str, scope: &str) ->
             fs::remove_dir_all(path)?;
         }
         ui::success(&format!("Uninstalled skill '{}' ({})", name, scope));
+        removed.push(name);
+    }
+    if let Some(target_dir) = skills.first().and_then(|p| p.parent()) {
+        forget_installed(target_dir, &removed)?;
     }
     Ok(())
 }
@@ -949,9 +1015,6 @@ fn install_profile(
         .context(config::source_dir_hint())?;
     let resolved = config::resolve_profile(profile_name, &source_dir)?;
 
-    let target_dir = config::skill_target(global, agent);
-    fs::create_dir_all(&target_dir)?;
-
     let scope = if global { "global" } else { "local" };
     ui::info(&format!(
         "Installing profile '{}': {} skills ({}, {})",
@@ -961,49 +1024,15 @@ fn install_profile(
         agent
     ));
 
-    let mut installed = 0;
-    let mut skipped = 0;
-    let local_dir = config::skill_target(false, agent);
-    let global_dir = config::skill_target(true, agent);
-
-    for (group, skill_name) in &resolved.skills {
-        let skill_path = source_dir.join(group).join(skill_name);
-        if !skill_path.is_dir() || !skill_path.join("SKILL.md").exists() {
-            ui::warn(&format!("Skill '{}/{}' not found, skipping", group, skill_name));
-            skipped += 1;
-            continue;
-        }
-
-        // Check cross-scope duplicate
-        if !force
-            && warn_cross_scope_duplicate(skill_name, group, global, &local_dir, &global_dir)
-        {
-            skipped += 1;
-            continue;
-        }
-
-        migrate_legacy_destination(&target_dir, group, skill_name, agent)?;
-        let link_path = config::skill_destination(&target_dir, skill_name);
-
-        if link_path.exists() || link_path.is_symlink() {
-            if force {
-                if link_path.is_symlink() || link_path.is_file() {
-                    fs::remove_file(&link_path)?;
-                } else {
-                    fs::remove_dir_all(&link_path)?;
-                }
-            } else {
-                skipped += 1;
-                continue;
-            }
-        }
-
-        symlink(&skill_path, &link_path).context(format!(
-            "Failed to create symlink for '{}/{}'",
-            group, skill_name
-        ))?;
-        installed += 1;
-    }
+    let (installed, skipped) = link_skills(
+        &source_dir,
+        &resolved.skills,
+        global,
+        agent,
+        force,
+        &resolved.name,
+        false,
+    )?;
 
     ui::success(&format!(
         "Profile '{}': {} installed, {} skipped",
@@ -1181,6 +1210,25 @@ fn install_selected_skills(
     agent: config::SkillAgent,
     force: bool,
 ) -> Result<()> {
+    let (installed, skipped) =
+        link_skills(source_dir, skills, global, agent, force, "manual", true)?;
+
+    ui::success(&format!("Done: {} installed, {} skipped", installed, skipped));
+    Ok(())
+}
+
+/// Symlink `(group, skill)` pairs from a local source into the target skills
+/// directory and record them in its state file under `layer`. Existing entries
+/// are skipped unless `force`. Returns `(installed, skipped)`.
+fn link_skills(
+    source_dir: &Path,
+    skills: &[(String, String)],
+    global: bool,
+    agent: config::SkillAgent,
+    force: bool,
+    layer: &str,
+    announce: bool,
+) -> Result<(usize, usize)> {
     let target_dir = config::skill_target(global, agent);
     fs::create_dir_all(&target_dir)?;
 
@@ -1189,6 +1237,7 @@ fn install_selected_skills(
     let global_dir = config::skill_target(true, agent);
     let mut installed = 0;
     let mut skipped = 0;
+    let mut recorded = Vec::new();
 
     for (group, skill_name) in skills {
         let skill_path = source_dir.join(group).join(skill_name);
@@ -1226,14 +1275,167 @@ fn install_selected_skills(
             "Failed to create symlink for '{}/{}'",
             group, skill_name
         ))?;
-        ui::success(&format!(
-            "Installed skill '{}/{}' ({}, {})",
-            group, skill_name, scope, agent
+        recorded.push((
+            skill_name.clone(),
+            skill_record(
+                layer,
+                source_dir.display().to_string(),
+                format!("{group}/{skill_name}"),
+                config::InstallMode::Symlink,
+            ),
         ));
+        if announce {
+            ui::success(&format!(
+                "Installed skill '{}/{}' ({}, {})",
+                group, skill_name, scope, agent
+            ));
+        }
         installed += 1;
     }
 
-    ui::success(&format!("Done: {} installed, {} skipped", installed, skipped));
+    record_installed(&target_dir, recorded)?;
+    Ok((installed, skipped))
+}
+
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Health {
+    /// Recorded in state and present
+    Ok,
+    /// Recorded in state but gone or a dangling symlink
+    Missing,
+    /// Present but not installed by agt
+    Unmanaged,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct StatusRow {
+    name: String,
+    health: Health,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    record: Option<config::SkillRecord>,
+}
+
+/// Compare a skills directory with its state file.
+fn status_rows(target_dir: &Path, state: &config::InstallState) -> Vec<StatusRow> {
+    let mut rows = Vec::new();
+    for (name, record) in &state.skills {
+        let path = config::skill_destination(target_dir, name);
+        let health = if path.join("SKILL.md").exists() {
+            Health::Ok
+        } else {
+            Health::Missing
+        };
+        rows.push(StatusRow {
+            name: name.clone(),
+            health,
+            record: Some(record.clone()),
+        });
+    }
+    if let Ok(entries) = fs::read_dir(target_dir) {
+        let mut unmanaged: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.path().join("SKILL.md").exists())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|name| !name.starts_with('.') && !state.skills.contains_key(name))
+            .collect();
+        unmanaged.sort();
+        rows.extend(unmanaged.into_iter().map(|name| StatusRow {
+            name,
+            health: Health::Unmanaged,
+            record: None,
+        }));
+    }
+    rows
+}
+
+fn status(global: bool, agent: config::SkillAgent, json: bool) -> Result<()> {
+    let target_dir = config::skill_target(global, agent);
+    let state = config::InstallState::load(&target_dir)?;
+    let rows = status_rows(&target_dir, &state);
+    let legacy = if agent == config::SkillAgent::Claude {
+        plan_migration(&target_dir).moves.len()
+    } else {
+        0
+    };
+
+    if json {
+        let out = serde_json::json!({
+            "target": target_dir,
+            "state": config::state_path(&target_dir),
+            "stack": state.stack,
+            "skills": rows,
+            "legacy_grouped": legacy,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    eprintln!("{} {}", "Target:".bold(), target_dir.display());
+    if let Some(stack) = &state.stack {
+        eprintln!("{} {}", "Stack:".bold(), stack);
+    }
+    if rows.is_empty() {
+        ui::info("No skills installed");
+    }
+    for row in &rows {
+        let mark = match row.health {
+            Health::Ok => "ok".green(),
+            Health::Missing => "missing".red(),
+            Health::Unmanaged => "unmanaged".yellow(),
+        };
+        let detail = match &row.record {
+            Some(r) => format!("{}  {} ({})", r.layer, r.origin, r.source),
+            None => "not installed by agt".to_string(),
+        };
+        eprintln!("  {:<10} {:<28} {}", mark, row.name, detail.dimmed());
+    }
+    if legacy > 0 {
+        ui::warn(&format!(
+            "{} skills sit under <group>/<skill> where Claude Code does not load them; run `agt skill migrate{}`",
+            legacy,
+            if global { " --global" } else { "" }
+        ));
+    }
+    Ok(())
+}
+
+fn skill_record(
+    layer: &str,
+    source: String,
+    origin: String,
+    mode: config::InstallMode,
+) -> config::SkillRecord {
+    config::SkillRecord {
+        layer: layer.to_string(),
+        source,
+        origin,
+        mode,
+    }
+}
+
+/// Add freshly installed skills to the target's state file.
+fn record_installed(target_dir: &Path, entries: Vec<(String, config::SkillRecord)>) -> Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let mut state = config::InstallState::load(target_dir)?;
+    for (name, record) in entries {
+        state.record(&name, record);
+    }
+    state.save(target_dir)
+}
+
+/// Drop removed skills from the target's state file.
+fn forget_installed(target_dir: &Path, names: &[String]) -> Result<()> {
+    let mut state = config::InstallState::load(target_dir)?;
+    let mut changed = false;
+    for name in names {
+        changed |= state.forget(name);
+    }
+    if changed {
+        state.save(target_dir)?;
+    }
     Ok(())
 }
 
@@ -2010,6 +2212,41 @@ mod tests {
 
         assert_eq!(plan.moves.len(), 1);
         assert_eq!(plan.conflicts.len(), 1);
+    }
+
+    #[test]
+    fn status_separates_ok_missing_and_unmanaged() {
+        use crate::config::{InstallMode, InstallState, SkillRecord};
+        let tmp = tempfile::tempdir().unwrap();
+        let skills = tmp.path().join("skills");
+        make_skill(&skills.join("kept"));
+        make_skill(&skills.join("by-hand"));
+        let mut state = InstallState::default();
+        for name in ["kept", "gone"] {
+            state.record(
+                name,
+                SkillRecord {
+                    layer: "core".into(),
+                    source: "/src".into(),
+                    origin: format!("dev/{name}"),
+                    mode: InstallMode::Symlink,
+                },
+            );
+        }
+
+        let rows: Vec<_> = super::status_rows(&skills, &state)
+            .into_iter()
+            .map(|r| (r.name, r.health))
+            .collect();
+
+        assert_eq!(
+            rows,
+            vec![
+                ("gone".to_string(), super::Health::Missing),
+                ("kept".to_string(), super::Health::Ok),
+                ("by-hand".to_string(), super::Health::Unmanaged),
+            ]
+        );
     }
 
     #[test]

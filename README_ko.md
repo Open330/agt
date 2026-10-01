@@ -62,6 +62,9 @@ agt skill migrate --global --dry-run   # 미리 보기
 agt skill migrate --global
 ```
 
+`agt skill status --global`는 설치된 스킬마다 어느 프로필에서 왔는지(skills 디렉터리
+옆 `agt-state.json`에 기록)와 agt가 설치하지 않은 항목을 보여줍니다.
+
 `~/.claude`가 아닌 Claude 설정 디렉터리를 쓰려면 `--claude-dir <dir>`(또는
 `CLAUDE_CONFIG_DIR`)을 지정합니다. 스킬, 훅, 팀, `settings.json`에 모두
 적용됩니다.
