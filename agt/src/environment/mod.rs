@@ -201,14 +201,7 @@ impl<'a> Env<'a> {
             );
         }
         // gh skill install drops the executable bit; restore it from git modes.
-        for rel in &pkg.executables {
-            let file = installed.join(rel);
-            if file.is_file() {
-                let mut perms = fs::metadata(&file)?.permissions();
-                perms.set_mode(perms.mode() | 0o111);
-                fs::set_permissions(&file, perms)?;
-            }
-        }
+        restore_exec_bits(&installed, &pkg.executables)?;
 
         let hash = integrity::hash_dir(&installed)?;
         if pkg.integrity.is_empty() {
@@ -290,6 +283,56 @@ impl<'a> Env<'a> {
         Ok(ops)
     }
 
+    /// Take ownership of existing unmanaged copies of `name`, which the caller
+    /// has just declared in agt.toml. Copies identical to the locked content
+    /// are marked in place; others are moved to a backup so `sync` can install
+    /// the locked version. Returns `(agent, backup)` per adopted copy.
+    pub fn adopt(&self, name: &str) -> Result<Vec<(SkillAgent, Option<PathBuf>)>> {
+        let deps = self.load_manifest()?.deps()?;
+        let mut lock = self.load_lock()?;
+        self.relock(&deps, &mut lock, &BTreeSet::new())?;
+        let pkg = lock
+            .skill(name)
+            .with_context(|| format!("'{name}' is not declared in agt.toml"))?;
+
+        let mut adopted = Vec::new();
+        for (&agent, root) in &self.targets {
+            let dir = root.join(name);
+            if dir.is_symlink() || !dir.is_dir() || Marker::read(&dir).is_some() {
+                continue;
+            }
+            // gh-installed copies differ from the lock only by dropped exec bits.
+            restore_exec_bits(&dir, &pkg.executables)?;
+            if integrity::hash_dir(&dir)? == pkg.integrity {
+                Marker {
+                    owner: self.scope.owner(),
+                    name: name.to_string(),
+                    integrity: pkg.integrity.clone(),
+                }
+                .write(&dir)?;
+                adopted.push((agent, None));
+            } else {
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default();
+                let backup = self
+                    .cache
+                    .with_file_name("adopted")
+                    .join(format!("{name}-{agent}-{stamp}"));
+                fs::create_dir_all(backup.parent().expect("backup has parent"))?;
+                fs::rename(&dir, &backup)
+                    .with_context(|| format!("Failed to move {} aside", dir.display()))?;
+                adopted.push((agent, Some(backup)));
+            }
+        }
+        if adopted.is_empty() {
+            bail!("No unmanaged '{name}' found in this scope's skill directories");
+        }
+        lock.save(&self.scope.lock_path())?;
+        Ok(adopted)
+    }
+
     pub fn sync(&self, opts: &SyncOptions) -> Result<Plan> {
         let manifest = self.load_manifest()?;
         let deps = manifest.deps()?;
@@ -352,6 +395,18 @@ impl<'a> Env<'a> {
         }
         Ok(Plan { stale, ops })
     }
+}
+
+fn restore_exec_bits(dir: &Path, executables: &[String]) -> Result<()> {
+    for rel in executables {
+        let file = dir.join(rel);
+        if file.is_file() && !file.is_symlink() {
+            let mut perms = fs::metadata(&file)?.permissions();
+            perms.set_mode(perms.mode() | 0o111);
+            fs::set_permissions(&file, perms)?;
+        }
+    }
+    Ok(())
 }
 
 fn stale_entries(deps: &[ResolvedDep], lock: &Lockfile, refresh: &BTreeSet<String>) -> Vec<String> {
@@ -448,7 +503,7 @@ impl Marker {
         })
     }
 
-    fn write(&self, dir: &Path) -> Result<()> {
+    pub(crate) fn write(&self, dir: &Path) -> Result<()> {
         fs::write(
             dir.join(MANAGED_MARKER),
             format!(

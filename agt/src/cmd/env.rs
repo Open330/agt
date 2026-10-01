@@ -134,6 +134,62 @@ pub fn remove(global: bool, name: &str) -> Result<()> {
     result
 }
 
+pub fn adopt(global: bool, name: &str) -> Result<()> {
+    util::validate_name(name)?;
+    let origin = [SkillAgent::Claude, SkillAgent::Codex]
+        .into_iter()
+        .map(|agent| crate::config::skill_target(global, agent).join(name))
+        .filter(|dir| dir.is_dir() && !dir.is_symlink())
+        .find_map(|dir| {
+            let skill_md = fs::read_to_string(dir.join("SKILL.md")).ok();
+            let origin = crate::doctor::scan::origin(&dir, skill_md.as_deref());
+            origin.github().map(|(repo, path, rev)| {
+                (repo.to_string(), path.to_string(), rev.map(String::from))
+            })
+        });
+    let Some((repo, path, rev)) = origin else {
+        bail!(
+            "No unmanaged '{name}' with a known GitHub origin was found. \
+             Declare it with `agt add skill <owner/repo> <path> --name {name}` instead."
+        );
+    };
+
+    let scope = Scope::resolve(global)?;
+    let manifest_path = scope.manifest_path();
+    let previous = fs::read_to_string(&manifest_path).ok();
+    let mut doc = if previous.is_some() {
+        edit::load(&manifest_path)?
+    } else {
+        ui::info(&format!("Creating {}", manifest_path.display()));
+        edit::starter(&[SkillAgent::Claude])
+    };
+    edit::add_skill(&mut doc, name, &repo, rev.as_deref(), Some(&path))?;
+    edit::save(&manifest_path, &doc)?;
+
+    let gh = LazyGh::new();
+    let result = Env::new(scope.clone(), &gh)
+        .and_then(|env| env.adopt(name))
+        .and_then(|adopted| {
+            for (agent, backup) in adopted {
+                match backup {
+                    None => ui::info(&format!(
+                        "{agent}: adopted in place (matches the locked commit)"
+                    )),
+                    Some(path) => ui::warn(&format!(
+                        "{agent}: existing copy differed from {repo}@{}; moved to {}",
+                        rev.as_deref().unwrap_or("default"),
+                        path.display()
+                    )),
+                }
+            }
+            run_sync(&scope, &SyncOptions::default())
+        });
+    if result.is_err() {
+        restore(&manifest_path, previous.as_deref())?;
+    }
+    result
+}
+
 pub fn sync(global: bool, check: bool, frozen: bool) -> Result<()> {
     let scope = Scope::resolve(global)?;
     let opts = SyncOptions {
