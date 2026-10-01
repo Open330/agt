@@ -17,6 +17,9 @@ enum Action {
     Relink(DesiredSkill),
     /// Correct symlink already there but not recorded; record it
     Adopt(DesiredSkill),
+    /// An unrecorded symlink under another name points at this skill; move it
+    /// to the install name instead of loading the skill twice
+    Rename(String, DesiredSkill),
     /// Managed skill the stack no longer wants
     Prune(String),
     /// Something agt does not manage occupies the name; leave it
@@ -36,7 +39,12 @@ fn plan_dir(skills_dir: &Path, desired: &[DesiredSkill], state: &InstallState) -
         let dest = config::skill_destination(skills_dir, &skill.name);
         let managed = state.skills.get(&skill.name).is_some_and(|r| r.applied);
         if !(dest.exists() || dest.is_symlink()) {
-            actions.push(Action::Link(skill.clone()));
+            actions.push(
+                match unrecorded_link_to(skills_dir, &skill.skill_path(), state) {
+                    Some(old_name) => Action::Rename(old_name, skill.clone()),
+                    None => Action::Link(skill.clone()),
+                },
+            );
             continue;
         }
         let points_here = fs::read_link(&dest).is_ok_and(|t| t == skill.skill_path());
@@ -59,6 +67,20 @@ fn plan_dir(skills_dir: &Path, desired: &[DesiredSkill], state: &InstallState) -
         }
     }
     actions
+}
+
+/// Name of a symlink in `skills_dir` that points at `target` and that agt has
+/// no record of, e.g. a link a user made by hand under the directory name.
+fn unrecorded_link_to(skills_dir: &Path, target: &Path, state: &InstallState) -> Option<String> {
+    let mut names: Vec<String> = fs::read_dir(skills_dir)
+        .ok()?
+        .flatten()
+        .filter(|e| fs::read_link(e.path()).is_ok_and(|t| t == target))
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|name| !state.skills.contains_key(name))
+        .collect();
+    names.sort();
+    names.into_iter().next()
 }
 
 fn applied_record(skill: &DesiredSkill) -> SkillRecord {
@@ -86,6 +108,14 @@ fn execute_actions(skills_dir: &Path, actions: &[Action], state: &mut InstallSta
                 state.record(&skill.name, applied_record(skill));
             }
             Action::Adopt(skill) => state.record(&skill.name, applied_record(skill)),
+            Action::Rename(old_name, skill) => {
+                let from = config::skill_destination(skills_dir, old_name);
+                let dest = config::skill_destination(skills_dir, &skill.name);
+                fs::rename(&from, &dest).with_context(|| {
+                    format!("Failed to move {} -> {}", from.display(), dest.display())
+                })?;
+                state.record(&skill.name, applied_record(skill));
+            }
             Action::Prune(name) => {
                 let dest = config::skill_destination(skills_dir, name);
                 if dest.is_symlink() {
@@ -130,6 +160,12 @@ fn print_actions(skills_dir: &Path, actions: &[Action], dry_run: bool) {
             Action::Adopt(s) => {
                 format!("  {} {:<28} {}", "= adopt".cyan(), s.name, s.layer.dimmed())
             }
+            Action::Rename(old_name, s) => format!(
+                "  {} {:<28} {}",
+                "> rename".cyan(),
+                s.name,
+                format!("from {old_name}, {}", s.layer).dimmed()
+            ),
             Action::Prune(n) => format!("  {} {}", "- prune".red(), n),
             Action::Conflict(s) => format!(
                 "  {} {:<28} {}",
@@ -327,6 +363,7 @@ mod tests {
                 Action::Link(s) => format!("link {}", s.name),
                 Action::Relink(s) => format!("relink {}", s.name),
                 Action::Adopt(s) => format!("adopt {}", s.name),
+                Action::Rename(old, s) => format!("rename {old} -> {}", s.name),
                 Action::Prune(n) => format!("prune {n}"),
                 Action::Conflict(s) => format!("conflict {}", s.name),
             })
@@ -374,6 +411,25 @@ mod tests {
         assert!(plan_dir(&skills_dir, &desired, &state)
             .iter()
             .all(|a| !a.changes()));
+    }
+
+    #[test]
+    fn unrecorded_link_under_another_name_is_renamed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills_dir = tmp.path().join("skills");
+        let mut wanted = skill(tmp.path(), "vault", "p:skills");
+        wanted.name = "managing-vault".to_string();
+        fs::create_dir_all(&skills_dir).unwrap();
+        symlink(wanted.skill_path(), skills_dir.join("vault")).unwrap();
+        let mut state = InstallState::default();
+
+        let actions = plan_dir(&skills_dir, std::slice::from_ref(&wanted), &state);
+        assert_eq!(kinds(&actions), ["rename vault -> managing-vault"]);
+
+        execute_actions(&skills_dir, &actions, &mut state).unwrap();
+        assert!(skills_dir.join("managing-vault/SKILL.md").exists());
+        assert!(!skills_dir.join("vault").is_symlink());
+        assert!(state.skills["managing-vault"].applied);
     }
 
     #[test]
