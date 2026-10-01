@@ -1,6 +1,8 @@
 mod cmd;
 mod config;
+mod environment;
 mod frontmatter;
+mod gh;
 mod llm;
 mod remote;
 mod ui;
@@ -99,6 +101,52 @@ enum Commands {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
+    /// Create agt.toml for this project (or the user environment with -g)
+    Init {
+        /// Manage the user environment (~/.config/agt/agt.toml)
+        #[arg(short, long)]
+        global: bool,
+        /// Agents to install skills for (default: claude)
+        #[arg(long, value_enum, value_delimiter = ',')]
+        agents: Vec<config::SkillAgent>,
+    },
+    /// Declare a dependency in agt.toml, lock it, and install it
+    Add {
+        /// Manage the user environment (~/.config/agt/agt.toml)
+        #[arg(short, long, global = true)]
+        global: bool,
+        #[command(subcommand)]
+        kind: cmd::env::AddKind,
+    },
+    /// Remove a dependency from agt.toml and uninstall it
+    Remove {
+        /// Dependency name
+        name: String,
+        /// Manage the user environment (~/.config/agt/agt.toml)
+        #[arg(short, long)]
+        global: bool,
+    },
+    /// Install exactly what agt.lock describes (re-locking manifest changes)
+    Sync {
+        /// Manage the user environment (~/.config/agt/agt.toml)
+        #[arg(short, long)]
+        global: bool,
+        /// Report differences without changing anything; exit 1 if any
+        #[arg(long)]
+        check: bool,
+        /// Fail if agt.lock does not match agt.toml (for CI)
+        #[arg(long)]
+        frozen: bool,
+    },
+    /// Resolve agt.toml into agt.lock without installing
+    Lock {
+        /// Manage the user environment (~/.config/agt/agt.toml)
+        #[arg(short, long)]
+        global: bool,
+        /// Re-resolve these dependencies to their latest commit (all if none given)
+        #[arg(long, num_args = 0.., value_name = "NAME")]
+        update: Option<Vec<String>>,
+    },
     /// Run prompt with skill matching
     Run {
         /// The prompt to execute
@@ -142,6 +190,15 @@ fn main() {
             check,
         } => cmd::apply::execute(target.as_deref(), dry_run, check),
         Commands::Gate { dir, command } => cmd::gate::execute(&dir, &command),
+        Commands::Init { global, agents } => cmd::env::init(global, agents),
+        Commands::Add { global, kind } => cmd::env::add(global, kind),
+        Commands::Remove { name, global } => cmd::env::remove(global, &name),
+        Commands::Sync {
+            global,
+            check,
+            frozen,
+        } => cmd::env::sync(global, check, frozen),
+        Commands::Lock { global, update } => cmd::env::lock(global, update),
         Commands::Run { prompt, skill, llm } => {
             cmd::run::execute(&prompt.join(" "), skill.as_deref(), llm.as_deref())
         }

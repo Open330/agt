@@ -148,6 +148,30 @@ parent directories. To limit a global hook to one tree, wrap its command:
 `agt gate` runs the command only when `$CLAUDE_PROJECT_DIR` is inside the
 directory and otherwise exits 0 silently.
 
+## Declarative Environments
+
+Declare a project's skills in `agt.toml`, pin them in `agt.lock`, and let
+`agt sync` make every checkout match. GitHub content is fetched through
+`gh skill install`, so the GitHub CLI must be installed and authenticated.
+
+```bash
+agt init --agents claude,codex
+agt add skill anthropics/skills pdf
+agt add skill jiunbae/agent-skills development/git-commit-pr
+git add agt.toml agt.lock
+
+agt sync             # teammates: install exactly what agt.lock pins
+agt sync --frozen    # CI: fail if agt.lock is stale
+agt sync --check     # report drift (including local edits) without changing anything
+agt lock --update    # move pins to the latest commit of each declared rev
+```
+
+Use `-g` with any of these commands to manage the user environment in
+`~/.config/agt/agt.toml`. agt only modifies skill directories it installed
+(marked with `.agt-managed`), and restores executable bits that
+`gh skill install` drops. Design notes:
+[`docs/design/0001-agent-env-manifest-and-doctor.md`](docs/design/0001-agent-env-manifest-and-doctor.md).
+
 ## Source Discovery
 
 Commands that need a local skills library use this priority:
