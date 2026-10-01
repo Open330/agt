@@ -255,7 +255,9 @@ fn install(
     if !force {
         let local_dir = config::skill_target(false, agent);
         let global_dir = config::skill_target(true, agent);
-        if warn_cross_scope_duplicate(&name, &group, global, &local_dir, &global_dir) {
+        let installed_name = config::install_name(&skill_path, &name);
+        if warn_cross_scope_duplicate(&name, &installed_name, &group, global, &local_dir, &global_dir)
+        {
             return Ok(());
         }
     }
@@ -503,7 +505,14 @@ fn install_remote_repo(
 
         // Check cross-scope duplicate
         if !force
-            && warn_cross_scope_duplicate(skill_name, group, global, &local_dir, &global_dir)
+            && warn_cross_scope_duplicate(
+                skill_name,
+                &config::install_name(&source_path, skill_name),
+                group,
+                global,
+                &local_dir,
+                &global_dir,
+            )
         {
             skipped += 1;
             continue;
@@ -871,8 +880,17 @@ fn migrate_legacy_destination(
         return Ok(());
     }
     let legacy = config::legacy_grouped_destination(target_dir, group, skill_name);
-    let flat = config::skill_destination(target_dir, skill_name);
-    if !(legacy.exists() || legacy.is_symlink()) || flat.exists() || flat.is_symlink() {
+    if !(legacy.exists() || legacy.is_symlink()) {
+        return Ok(());
+    }
+    let flat = config::skill_destination(target_dir, &config::install_name(&legacy, skill_name));
+    if flat.exists() || flat.is_symlink() {
+        // A grouped link to the skill the flat entry already provides would
+        // only load it twice; anything else is left for the user.
+        if legacy.is_symlink() && same_target(&legacy, &flat) {
+            fs::remove_file(&legacy)?;
+            let _ = fs::remove_dir(&group_dir);
+        }
         return Ok(());
     }
     fs::rename(&legacy, &flat).context(format!(
@@ -885,9 +903,16 @@ fn migrate_legacy_destination(
     Ok(())
 }
 
+/// Whether two paths resolve to the same file or directory.
+fn same_target(a: &Path, b: &Path) -> bool {
+    matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+}
+
 #[derive(Debug, Default, PartialEq)]
 struct MigrationPlan {
     moves: Vec<(PathBuf, PathBuf)>,
+    /// Grouped links whose skill is already installed flat; removed.
+    duplicates: Vec<PathBuf>,
     conflicts: Vec<(PathBuf, PathBuf)>,
     ignored: Vec<PathBuf>,
 }
@@ -932,8 +957,11 @@ fn plan_migration(target_dir: &Path) -> MigrationPlan {
                 plan.ignored.push(child);
                 continue;
             }
-            let flat = target_dir.join(&name);
-            if flat.exists() || flat.is_symlink() || !claimed.insert(flat.clone()) {
+            let flat = target_dir.join(config::install_name(&child, &name));
+            if child.is_symlink() && (flat.exists() || flat.is_symlink()) && same_target(&child, &flat)
+            {
+                plan.duplicates.push(child);
+            } else if flat.exists() || flat.is_symlink() || !claimed.insert(flat.clone()) {
                 plan.conflicts.push((child, flat));
             } else {
                 plan.moves.push((child, flat));
@@ -946,7 +974,11 @@ fn plan_migration(target_dir: &Path) -> MigrationPlan {
 fn migrate(global: bool, dry_run: bool) -> Result<()> {
     let target_dir = config::skill_target(global, config::SkillAgent::Claude);
     let plan = plan_migration(&target_dir);
-    if plan.moves.is_empty() && plan.conflicts.is_empty() && plan.ignored.is_empty() {
+    if plan.moves.is_empty()
+        && plan.duplicates.is_empty()
+        && plan.conflicts.is_empty()
+        && plan.ignored.is_empty()
+    {
         ui::success(&format!(
             "{} already uses the flat layout",
             target_dir.display()
@@ -972,6 +1004,20 @@ fn migrate(global: bool, dry_run: bool) -> Result<()> {
             to.strip_prefix(&target_dir).unwrap_or(to).display()
         );
     }
+    for path in &plan.duplicates {
+        if !dry_run {
+            fs::remove_file(path)
+                .context(format!("Failed to remove {}", path.display()))?;
+            if let Some(parent) = path.parent() {
+                let _ = fs::remove_dir(parent);
+            }
+        }
+        eprintln!(
+            "  {} {} (already installed flat)",
+            if dry_run { "would remove" } else { "removed" },
+            path.strip_prefix(&target_dir).unwrap_or(path).display()
+        );
+    }
     for (from, to) in &plan.conflicts {
         ui::warn(&format!(
             "Left {}: {} is already taken",
@@ -988,9 +1034,10 @@ fn migrate(global: bool, dry_run: bool) -> Result<()> {
 
     let verb = if dry_run { "would move" } else { "moved" };
     ui::success(&format!(
-        "{} skills {}, {} conflicts, {} ignored ({})",
+        "{} skills {}, {} duplicates removed, {} conflicts, {} ignored ({})",
         plan.moves.len(),
         verb,
+        plan.duplicates.len(),
         plan.conflicts.len(),
         plan.ignored.len(),
         target_dir.display()
@@ -1244,7 +1291,14 @@ fn link_skills(
 
         // Check cross-scope duplicate
         if !force
-            && warn_cross_scope_duplicate(skill_name, group, global, &local_dir, &global_dir)
+            && warn_cross_scope_duplicate(
+                skill_name,
+                &config::install_name(&skill_path, skill_name),
+                group,
+                global,
+                &local_dir,
+                &global_dir,
+            )
         {
             skipped += 1;
             continue;
@@ -1253,6 +1307,22 @@ fn link_skills(
         migrate_legacy_destination(&target_dir, group, skill_name, agent)?;
         let installed_name = config::install_name(&skill_path, skill_name);
         let link_path = config::skill_destination(&target_dir, &installed_name);
+
+        // Already linked here (e.g. a legacy entry just moved into place):
+        // record it so status and apply know where it came from.
+        if !force && fs::read_link(&link_path).is_ok_and(|t| t == skill_path) {
+            recorded.push((
+                installed_name.clone(),
+                skill_record(
+                    layer,
+                    source_dir.display().to_string(),
+                    format!("{group}/{skill_name}"),
+                    config::InstallMode::Symlink,
+                ),
+            ));
+            skipped += 1;
+            continue;
+        }
 
         if link_path.exists() || link_path.is_symlink() {
             if force {
@@ -1838,23 +1908,21 @@ fn find_skill_in_source(source_dir: &Path, name: &str) -> Option<PathBuf> {
 }
 
 /// Check if a skill (group/name) exists in a target directory
-fn skill_exists_in_dir(dir: &Path, group: &str, name: &str) -> bool {
+fn skill_exists_in_dir(dir: &Path, group: &str, name: &str, installed_name: &str) -> bool {
     // Check grouped layout: dir/group/name
     let grouped = dir.join(group).join(name);
     if grouped.exists() || grouped.is_symlink() {
         return true;
     }
-    // Check flat layout: dir/name
-    let flat = dir.join(name);
-    if flat.exists() || flat.is_symlink() {
-        return true;
-    }
-    false
+    // Check flat layout: dir/<install name>
+    let flat = dir.join(installed_name);
+    flat.exists() || flat.is_symlink()
 }
 
 /// Check cross-scope duplicate and print warning. Returns true if duplicate found.
 fn warn_cross_scope_duplicate(
     skill_name: &str,
+    installed_name: &str,
     group: &str,
     installing_global: bool,
     local_dir: &Path,
@@ -1874,7 +1942,7 @@ fn warn_cross_scope_duplicate(
     } else {
         (global_dir, "global")
     };
-    if skill_exists_in_dir(other_dir, group, skill_name) {
+    if skill_exists_in_dir(other_dir, group, skill_name, installed_name) {
         eprintln!(
             "{}",
             format!(
@@ -2115,8 +2183,59 @@ mod tests {
     use std::path::Path;
 
     fn make_skill(dir: &Path) {
+        let name = dir.file_name().unwrap().to_string_lossy().to_string();
+        make_named_skill(dir, &name);
+    }
+
+    fn make_named_skill(dir: &Path, name: &str) {
         fs::create_dir_all(dir).unwrap();
-        fs::write(dir.join("SKILL.md"), "---\nname: x\n---\n").unwrap();
+        fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\n---\n")).unwrap();
+    }
+
+    #[test]
+    fn legacy_link_moves_to_the_frontmatter_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src/billing/notion");
+        make_named_skill(&src, "billing-notion");
+        let skills = tmp.path().join("skills");
+        fs::create_dir_all(skills.join("billing")).unwrap();
+        std::os::unix::fs::symlink(&src, skills.join("billing/notion")).unwrap();
+
+        migrate_legacy_destination(&skills, "billing", "notion", SkillAgent::Claude).unwrap();
+
+        assert!(skills.join("billing-notion/SKILL.md").exists());
+        assert!(!skills.join("notion").exists());
+        assert!(!skills.join("billing").exists());
+    }
+
+    #[test]
+    fn grouped_duplicate_of_a_flat_install_is_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src/billing/notion");
+        make_named_skill(&src, "billing-notion");
+        let skills = tmp.path().join("skills");
+        fs::create_dir_all(skills.join("billing")).unwrap();
+        std::os::unix::fs::symlink(&src, skills.join("billing/notion")).unwrap();
+        std::os::unix::fs::symlink(&src, skills.join("billing-notion")).unwrap();
+
+        let plan = plan_migration(&skills);
+        assert_eq!(plan.duplicates, vec![skills.join("billing/notion")]);
+        assert!(plan.moves.is_empty() && plan.conflicts.is_empty());
+
+        migrate_legacy_destination(&skills, "billing", "notion", SkillAgent::Claude).unwrap();
+        assert!(!skills.join("billing").exists());
+        assert!(skills.join("billing-notion/SKILL.md").exists());
+    }
+
+    #[test]
+    fn same_directory_name_in_two_groups_is_not_a_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills = tmp.path().join("skills");
+        make_named_skill(&skills.join("billing/notion"), "billing-notion");
+        make_named_skill(&skills.join("crm/notion"), "crm-notion");
+        let plan = plan_migration(&skills);
+        assert_eq!(plan.moves.len(), 2);
+        assert!(plan.conflicts.is_empty());
     }
 
     #[test]
