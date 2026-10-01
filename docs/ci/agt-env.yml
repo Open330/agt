@@ -1,0 +1,44 @@
+# Example workflow for a repository that declares its agent environment in
+# agt.toml. Copy to .github/workflows/agt-env.yml in that repository.
+#
+# - lock: fails a pull request whose agt.toml changed without a matching
+#   agt.lock (offline, no GitHub API calls).
+# - outdated: weekly report of declared skills whose upstream changed.
+#   Applying updates stays a local, reviewed step (`agt update`).
+name: agt environment
+
+on:
+  pull_request:
+    paths: [agt.toml, agt.lock]
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lock:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --global @open330/agt
+      - run: agt lock --check
+
+  outdated:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --global @open330/agt
+      # gh is preinstalled on GitHub-hosted runners; agt uses it for the API.
+      - run: agt outdated | tee -a "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ github.token }}

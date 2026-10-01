@@ -163,8 +163,17 @@ git add agt.toml agt.lock
 agt sync             # teammates: install exactly what agt.lock pins
 agt sync --frozen    # CI: fail if agt.lock is stale
 agt sync --check     # report drift (including local edits) without changing anything
-agt lock --update    # move pins to the latest commit of each declared rev
+agt lock --check     # CI: offline check that agt.lock matches agt.toml
+agt outdated         # which declared skills changed upstream
+agt update [name]    # review the diff, then move the pin and install
 ```
+
+`agt update` applies documentation-only changes directly. When scripts,
+executable files, or `allowed-tools` change, it shows the changed files and
+flags risky added lines (network calls, `rm -rf`, piping into a shell,
+credential paths). Then it asks before installing. Without a terminal it holds
+those updates back unless `--yes-all` is given. See
+[`docs/ci/agt-env.yml`](docs/ci/agt-env.yml) for a CI example.
 
 Check everything that is installed, whoever installed it, and bring
 `gh skill` installs under the manifest:

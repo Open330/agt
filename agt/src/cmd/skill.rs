@@ -205,6 +205,13 @@ fn install(
         if name.is_some() && profile_name.is_some() {
             bail!("Cannot specify both a skill name and --profile/--all");
         }
+        if profile_name.is_none() {
+            ui::warn(
+                "`agt skill install --from` for single skills is deprecated. Use \
+                 `agt add skill <owner/repo> <skill>` to declare and lock it, \
+                 or `gh skill install` for a one-off copy.",
+            );
+        }
         return install_remote(
             &spec_str,
             global,
