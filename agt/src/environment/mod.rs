@@ -4,6 +4,7 @@
 pub mod integrity;
 pub mod lock;
 pub mod manifest;
+pub mod review;
 
 use crate::config::SkillAgent;
 use crate::gh::{GhClient, TreeEntry};
@@ -333,6 +334,89 @@ impl<'a> Env<'a> {
         Ok(adopted)
     }
 
+    /// Compare each locked skill with what its declared rev points at now.
+    pub fn outdated(&self) -> Result<Vec<Outdated>> {
+        let deps = self.load_manifest()?.deps()?;
+        let lock = self.load_lock()?;
+        let mut out = Vec::new();
+        for dep in &deps {
+            let Some(pkg) = lock.skill(&dep.name) else {
+                out.push(Outdated::new(dep, None, Status::NotLocked));
+                continue;
+            };
+            if dep.rev.as_deref().is_some_and(is_commit_sha) {
+                out.push(Outdated::new(dep, Some(pkg), Status::Pinned));
+                continue;
+            }
+            let (rev, commit) = self.gh.resolve_commit(&dep.repo, dep.rev.as_deref())?;
+            let status = if commit == pkg.commit {
+                Status::Current
+            } else {
+                let entries = self.gh.tree(&dep.repo, &commit)?;
+                match entries
+                    .iter()
+                    .find(|e| e.kind == "tree" && e.path == pkg.path)
+                {
+                    None => Status::Missing { rev, commit },
+                    Some(tree) if tree.sha == pkg.tree => Status::CommitOnly { rev, commit },
+                    Some(_) => Status::Changed { rev, commit },
+                }
+            };
+            out.push(Outdated::new(dep, Some(pkg), status));
+        }
+        Ok(out)
+    }
+
+    /// Resolve `names` (all when empty) to their latest commit and review what
+    /// changed. Nothing is written; pass approved packages to `apply_updates`.
+    pub fn plan_updates(&self, names: &BTreeSet<String>) -> Result<Vec<Update>> {
+        let deps = self.load_manifest()?.deps()?;
+        for name in names {
+            if !deps.iter().any(|d| &d.name == name) {
+                bail!("'{name}' is not declared in agt.toml");
+            }
+        }
+        let lock = self.load_lock()?;
+        let mut updates = Vec::new();
+        for dep in deps
+            .iter()
+            .filter(|d| names.is_empty() || names.contains(&d.name))
+        {
+            let Some(old) = lock.skill(&dep.name).cloned() else {
+                bail!(
+                    "'{}' is not locked yet; run `agt lock{}` first",
+                    dep.name,
+                    self.scope.flag()
+                );
+            };
+            let mut new = self.resolve(dep)?;
+            if new.commit == old.commit {
+                continue;
+            }
+            let review = if new.tree == old.tree {
+                None
+            } else {
+                let old_dir = self.fetch(&mut old.clone())?;
+                let new_dir = self.fetch(&mut new)?;
+                Some(review::review(&old_dir, &new_dir))
+            };
+            updates.push(Update { old, new, review });
+        }
+        Ok(updates)
+    }
+
+    /// Write approved packages into agt.lock and install them.
+    pub fn apply_updates(&self, approved: Vec<LockedPackage>) -> Result<Plan> {
+        let mut lock = self.load_lock()?;
+        for pkg in approved {
+            lock.packages
+                .retain(|p| !(p.kind == pkg.kind && p.name == pkg.name));
+            lock.packages.push(pkg);
+        }
+        lock.save(&self.scope.lock_path())?;
+        self.sync(&SyncOptions::default())
+    }
+
     pub fn sync(&self, opts: &SyncOptions) -> Result<Plan> {
         let manifest = self.load_manifest()?;
         let deps = manifest.deps()?;
@@ -397,6 +481,61 @@ impl<'a> Env<'a> {
     }
 }
 
+fn is_commit_sha(rev: &str) -> bool {
+    rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum Status {
+    Current,
+    /// The declared rev moved, but this skill's tree did not change.
+    CommitOnly {
+        rev: String,
+        commit: String,
+    },
+    Changed {
+        rev: String,
+        commit: String,
+    },
+    /// The skill path no longer exists at the declared rev.
+    Missing {
+        rev: String,
+        commit: String,
+    },
+    /// Declared with a commit SHA; `update` never moves it.
+    Pinned,
+    NotLocked,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Outdated {
+    pub name: String,
+    pub repo: String,
+    pub locked: Option<String>,
+    #[serde(flatten)]
+    pub status: Status,
+}
+
+impl Outdated {
+    fn new(dep: &ResolvedDep, pkg: Option<&LockedPackage>, status: Status) -> Self {
+        Self {
+            name: dep.name.clone(),
+            repo: dep.repo.clone(),
+            locked: pkg.map(|p| p.commit.clone()),
+            status,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Update {
+    pub old: LockedPackage,
+    pub new: LockedPackage,
+    /// `None` when only the commit moved and the skill's content is identical.
+    pub review: Option<review::Review>,
+}
+
 fn restore_exec_bits(dir: &Path, executables: &[String]) -> Result<()> {
     for rel in executables {
         let file = dir.join(rel);
@@ -409,7 +548,11 @@ fn restore_exec_bits(dir: &Path, executables: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn stale_entries(deps: &[ResolvedDep], lock: &Lockfile, refresh: &BTreeSet<String>) -> Vec<String> {
+pub(crate) fn stale_entries(
+    deps: &[ResolvedDep],
+    lock: &Lockfile,
+    refresh: &BTreeSet<String>,
+) -> Vec<String> {
     let mut stale: Vec<String> = deps
         .iter()
         .filter(|dep| {
