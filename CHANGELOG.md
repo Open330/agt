@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2026.10.1] - 2026-10-01
+
 ### Added
 - Declarative environments: `agt init`, `agt add skill`, `agt remove`,
   `agt sync [--check|--frozen]`, and `agt lock [--update]` manage skills
