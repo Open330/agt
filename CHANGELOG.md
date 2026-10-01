@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `agt outdated` lists declared skills whose upstream tree changed.
+  `agt update` moves pins after a change review: documentation-only updates
+  apply directly; changes to scripts, executables, or `allowed-tools`, and
+  risky added lines, need approval (or `--yes-all`).
+- `agt lock --check` verifies offline that `agt.lock` matches `agt.toml`, with
+  an example workflow in `docs/ci/agt-env.yml`.
+
+### Deprecated
+- `agt skill install --from` for single skills. Use `agt add skill` or
+  `gh skill install`. Remote profile installs are unchanged.
+
 ## [2026.10.1] - 2026-10-01
 
 ### Added
