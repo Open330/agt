@@ -65,6 +65,24 @@ Use `--claude-dir <dir>` (or `CLAUDE_CONFIG_DIR`) to target a Claude config
 directory other than `~/.claude`; it applies to skills, hooks, teams and
 `settings.json`.
 
+## Profiles
+
+A skills repository defines profiles in `profiles.yml` (and any other root
+`*.yml`):
+
+```yaml
+core:
+  description: "Essential skills"
+  skills: [development/git-commit-pr, security/security-auditor]
+
+full:
+  extends: core          # or a list: [core, dev]
+  groups: [agents, development]
+```
+
+`agt skill install --profile core,full` installs the union of several
+profiles; `all` is every skill in the repository.
+
 ## Source Discovery
 
 Commands that need a local skills library use this priority:

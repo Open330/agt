@@ -22,7 +22,7 @@ pub enum SkillAction {
         /// Force overwrite existing
         #[arg(short, long)]
         force: bool,
-        /// Install a named profile (core, dev, all, etc.)
+        /// Install a named profile (core, dev, all, ...) or a comma list (core,dev)
         #[arg(short, long, value_name = "NAME")]
         profile: Option<String>,
         /// Install all available skills

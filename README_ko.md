@@ -66,6 +66,23 @@ agt skill migrate --global
 `CLAUDE_CONFIG_DIR`)을 지정합니다. 스킬, 훅, 팀, `settings.json`에 모두
 적용됩니다.
 
+## 프로필
+
+스킬 저장소는 `profiles.yml`(과 루트의 다른 `*.yml`)에 프로필을 정의합니다.
+
+```yaml
+core:
+  description: "Essential skills"
+  skills: [development/git-commit-pr, security/security-auditor]
+
+full:
+  extends: core          # 여러 개면 [core, dev]
+  groups: [agents, development]
+```
+
+`agt skill install --profile core,full`은 여러 프로필의 합집합을 설치합니다.
+`all`은 저장소의 모든 스킬입니다.
+
 ## 로컬 소스 탐색 순서
 
 1. `AGT_DIR` 또는 `AGENT_SKILLS_DIR`
