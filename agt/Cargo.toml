@@ -24,6 +24,8 @@ console = "0.16"
 toml = "0.8"
 comfy-table = "7"
 indicatif = "0.17"
+sha2 = "0.10"
+toml_edit = "0.22"
 
 [profile.release]
 opt-level = "z"

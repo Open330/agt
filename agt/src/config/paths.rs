@@ -38,7 +38,19 @@ fn resolve_claude_config_dir(
     home.unwrap_or_else(|| PathBuf::from("~")).join(".claude")
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum, serde::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    clap::ValueEnum,
+    serde::Deserialize,
+    serde::Serialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillAgent {
     #[default]
@@ -213,7 +225,7 @@ pub fn skills_in_group(source_dir: &Path, group: &str) -> Vec<String> {
 }
 
 /// Find the git repository root by walking up from cwd
-fn git_root() -> Option<PathBuf> {
+pub fn git_root() -> Option<PathBuf> {
     let mut dir = std::env::current_dir().ok()?;
     loop {
         if dir.join(".git").exists() {
