@@ -256,8 +256,14 @@ fn install(
         let local_dir = config::skill_target(false, agent);
         let global_dir = config::skill_target(true, agent);
         let installed_name = config::install_name(&skill_path, &name);
-        if warn_cross_scope_duplicate(&name, &installed_name, &group, global, &local_dir, &global_dir)
-        {
+        if warn_cross_scope_duplicate(
+            &name,
+            &installed_name,
+            &group,
+            global,
+            &local_dir,
+            &global_dir,
+        ) {
             return Ok(());
         }
     }

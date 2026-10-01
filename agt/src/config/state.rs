@@ -42,8 +42,11 @@ pub enum InstallMode {
     Copy,
 }
 
+/// Beside the skills directory, after resolving symlinks, so every config dir
+/// that shares one skills directory also shares one state file.
 pub fn state_path(skills_dir: &Path) -> PathBuf {
-    match skills_dir.parent() {
+    let resolved = fs::canonicalize(skills_dir).unwrap_or_else(|_| skills_dir.to_path_buf());
+    match resolved.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.join("agt-state.json"),
         _ => PathBuf::from("agt-state.json"),
     }

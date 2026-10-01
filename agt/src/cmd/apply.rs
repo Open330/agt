@@ -24,11 +24,14 @@ enum Action {
     Prune(String),
     /// Something agt does not manage occupies the name; leave it
     Conflict(DesiredSkill),
+    /// `agt skill install` already put this exact skill here; apply leaves it
+    /// to that command and never prunes it
+    Manual(DesiredSkill),
 }
 
 impl Action {
     fn changes(&self) -> bool {
-        !matches!(self, Action::Conflict(_))
+        !matches!(self, Action::Conflict(_) | Action::Manual(_))
     }
 }
 
@@ -37,7 +40,7 @@ fn plan_dir(skills_dir: &Path, desired: &[DesiredSkill], state: &InstallState) -
     let mut actions = Vec::new();
     for skill in desired {
         let dest = config::skill_destination(skills_dir, &skill.name);
-        let managed = state.skills.get(&skill.name).is_some_and(|r| r.applied);
+        let recorded = state.skills.get(&skill.name);
         if !(dest.exists() || dest.is_symlink()) {
             actions.push(
                 match unrecorded_link_to(skills_dir, &skill.skill_path(), state) {
@@ -48,16 +51,12 @@ fn plan_dir(skills_dir: &Path, desired: &[DesiredSkill], state: &InstallState) -
             continue;
         }
         let points_here = fs::read_link(&dest).is_ok_and(|t| t == skill.skill_path());
-        actions.push(match (points_here, managed) {
-            (true, true) => {
-                let recorded = &state.skills[&skill.name];
-                if recorded.layer == skill.layer {
-                    continue;
-                }
-                Action::Adopt(skill.clone())
-            }
-            (true, false) => Action::Adopt(skill.clone()),
-            (false, true) if dest.is_symlink() => Action::Relink(skill.clone()),
+        actions.push(match (points_here, recorded) {
+            (true, Some(r)) if r.applied && r.layer == skill.layer => continue,
+            (true, Some(r)) if r.applied => Action::Adopt(skill.clone()),
+            (true, Some(_)) => Action::Manual(skill.clone()),
+            (true, None) => Action::Adopt(skill.clone()),
+            (false, Some(r)) if r.applied && dest.is_symlink() => Action::Relink(skill.clone()),
             _ => Action::Conflict(skill.clone()),
         });
     }
@@ -123,14 +122,20 @@ fn execute_actions(skills_dir: &Path, actions: &[Action], state: &mut InstallSta
                         .with_context(|| format!("Failed to remove {}", dest.display()))?;
                 } else if dest.exists() {
                     ui::warn(&format!(
-                        "Not pruning {}: no longer a symlink agt created",
+                        "Not pruning {}: no longer a symlink agt created; leaving it unmanaged",
                         dest.display()
                     ));
-                    continue;
                 }
                 state.forget(name);
             }
-            Action::Conflict(_) => {}
+            Action::Conflict(skill) => {
+                // A managed entry the user replaced with something else is theirs now.
+                let dest = config::skill_destination(skills_dir, &skill.name);
+                if state.skills.get(&skill.name).is_some_and(|r| r.applied) && !dest.is_symlink() {
+                    state.forget(&skill.name);
+                }
+            }
+            Action::Manual(_) => {}
         }
     }
     Ok(())
@@ -167,6 +172,12 @@ fn print_actions(skills_dir: &Path, actions: &[Action], dry_run: bool) {
                 format!("from {old_name}, {}", s.layer).dimmed()
             ),
             Action::Prune(n) => format!("  {} {}", "- prune".red(), n),
+            Action::Manual(s) => format!(
+                "  {} {:<28} {}",
+                "= manual".dimmed(),
+                s.name,
+                "installed with `agt skill install`; left as is".dimmed()
+            ),
             Action::Conflict(s) => format!(
                 "  {} {:<28} {}",
                 "! skip".yellow(),
@@ -218,28 +229,54 @@ fn target_skill_dirs(target: &config::TargetDef) -> Result<Vec<(PathBuf, Option<
 }
 
 /// Keep the links `apply` made out of `git status` via `.git/info/exclude`.
-fn update_git_exclude(repo: &Path, skills_dir: &Path, state: &InstallState) -> Result<()> {
-    let git_dir = repo.join(".git");
-    if !git_dir.is_dir() {
-        return Ok(()); // worktree or submodule: .git is a file; leave it alone
+/// The exclude file git actually reads for `repo`. For a worktree or
+/// submodule `.git` is a file and the file lives in the common git dir.
+fn git_exclude_path(repo: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "--git-path", "info/exclude"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
     }
+    let path = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    Some(if path.is_absolute() {
+        path
+    } else {
+        repo.join(path)
+    })
+}
+
+fn update_git_exclude(repo: &Path, skills_dir: &Path, state: &InstallState) -> Result<()> {
+    let Some(path) = git_exclude_path(repo) else {
+        ui::warn(&format!(
+            "Not a git repository, links not excluded: {}",
+            repo.display()
+        ));
+        return Ok(());
+    };
     let rel = skills_dir.strip_prefix(repo).unwrap_or(skills_dir);
     let mut block = vec![EXCLUDE_BEGIN.to_string()];
-    if let Some(state_rel) = config::state_path(rel).to_str() {
-        block.push(format!("/{state_rel}"));
+    if let Some(parent) = rel.parent() {
+        block.push(format!("/{}", parent.join("agt-state.json").display()));
     }
+    // Only links apply still owns; a directory the user put in its place must
+    // stay visible to git.
     for (name, record) in &state.skills {
-        if record.applied {
+        if record.applied && skills_dir.join(name).is_symlink() {
             block.push(format!("/{}/{}", rel.display(), name));
         }
     }
     block.push(EXCLUDE_END.to_string());
 
-    let path = git_dir.join("info/exclude");
     let existing = fs::read_to_string(&path).unwrap_or_default();
     let updated = replace_block(&existing, &block.join("\n"));
     if updated != existing {
-        fs::create_dir_all(git_dir.join("info"))?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         fs::write(&path, updated).with_context(|| format!("Failed to write {}", path.display()))?;
     }
     Ok(())
@@ -273,6 +310,48 @@ fn replace_block(existing: &str, block: &str) -> String {
     text
 }
 
+/// Resolve symlinks in the longest existing prefix so that a skills dir that
+/// does not exist yet still compares equal to the same dir reached another way.
+fn normalize(path: &Path) -> PathBuf {
+    let mut existing = path.to_path_buf();
+    let mut rest = Vec::new();
+    while !existing.exists() {
+        match (existing.file_name(), existing.parent()) {
+            (Some(name), Some(parent)) => {
+                rest.push(name.to_os_string());
+                existing = parent.to_path_buf();
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+    let mut out = fs::canonicalize(&existing).unwrap_or(existing);
+    for part in rest.into_iter().rev() {
+        out.push(part);
+    }
+    out
+}
+
+/// Two targets writing one skills dir would prune each other's skills on
+/// every run; refuse instead.
+fn check_no_overlap(targets: &[config::TargetDef]) -> Result<()> {
+    let mut owners: std::collections::HashMap<PathBuf, &str> = std::collections::HashMap::new();
+    for target in targets {
+        for (dir, _) in target_skill_dirs(target).unwrap_or_default() {
+            if let Some(other) = owners.insert(normalize(&dir), &target.path) {
+                if other != target.path {
+                    bail!(
+                        "Targets '{}' and '{}' both cover {}; give each skills directory one target",
+                        other,
+                        target.path,
+                        dir.display()
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn execute(only: Option<&str>, dry_run: bool, check: bool) -> Result<()> {
     let path = config::layers_config_path();
     let cfg = config::LayersConfig::load(&path)?;
@@ -292,6 +371,8 @@ pub fn execute(only: Option<&str>, dry_run: bool, check: bool) -> Result<()> {
             only.map(|o| format!(" for '{o}'")).unwrap_or_default()
         );
     }
+
+    check_no_overlap(&cfg.target)?;
 
     let dry_run = dry_run || check;
     let mut pending = 0;
@@ -372,6 +453,7 @@ mod tests {
                 Action::Rename(old, s) => format!("rename {old} -> {}", s.name),
                 Action::Prune(n) => format!("prune {n}"),
                 Action::Conflict(s) => format!("conflict {}", s.name),
+                Action::Manual(s) => format!("manual {}", s.name),
             })
             .collect()
     }
@@ -457,6 +539,70 @@ mod tests {
                 (app.join("module/.claude/skills"), Some(app.join("module"))),
             ]
         );
+    }
+
+    #[test]
+    fn manual_install_is_neither_adopted_nor_pruned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills_dir = tmp.path().join("skills");
+        let manual = skill(tmp.path(), "manual-one", "p:core");
+        fs::create_dir_all(&skills_dir).unwrap();
+        symlink(manual.skill_path(), skills_dir.join("manual-one")).unwrap();
+        let mut state = InstallState::default();
+        let mut record = applied_record(&manual);
+        record.applied = false;
+        record.layer = "manual".into();
+        state.record("manual-one", record);
+
+        let actions = plan_dir(&skills_dir, std::slice::from_ref(&manual), &state);
+        assert_eq!(kinds(&actions), ["manual manual-one"]);
+        let actions = plan_dir(&skills_dir, &[], &state);
+        assert!(actions.is_empty(), "{:?}", kinds(&actions));
+    }
+
+    #[test]
+    fn replaced_entry_is_released_and_not_excluded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        std::process::Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .arg(&repo)
+            .status()
+            .unwrap();
+        let skills_dir = repo.join(".claude/skills");
+        let wanted = skill(tmp.path(), "a", "p:core");
+        let mut state = InstallState::default();
+        state.record("a", applied_record(&wanted));
+        fs::create_dir_all(skills_dir.join("a")).unwrap(); // user replaced the link
+
+        let actions = plan_dir(&skills_dir, std::slice::from_ref(&wanted), &state);
+        assert_eq!(kinds(&actions), ["conflict a"]);
+        execute_actions(&skills_dir, &actions, &mut state).unwrap();
+        assert!(!state.skills.contains_key("a"));
+
+        update_git_exclude(&repo, &skills_dir, &state).unwrap();
+        let exclude = fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        assert!(!exclude.contains("/.claude/skills/a"), "{exclude}");
+    }
+
+    #[test]
+    fn overlapping_targets_are_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("work");
+        fs::create_dir_all(work.join("app/.git")).unwrap();
+        let t = |path: &Path, stack: &str| config::TargetDef {
+            path: path.display().to_string(),
+            stack: stack.into(),
+            agent: SkillAgent::Claude,
+        };
+        let err = check_no_overlap(&[t(&work, "a"), t(&work.join("app"), "b")])
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("both cover"), "{err}");
+        assert!(check_no_overlap(&[t(&work, "a")]).is_ok());
     }
 
     #[test]

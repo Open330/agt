@@ -11,6 +11,9 @@ use super::{resolve_home, resolve_profile, SkillAgent};
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LayersConfig {
+    /// Directory relative source paths resolve against (the config file's).
+    #[serde(skip)]
+    base: PathBuf,
     /// Source name -> local skills repository path.
     #[serde(default)]
     pub sources: BTreeMap<String, String>,
@@ -91,8 +94,9 @@ impl LayersConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read layer config {}", path.display()))?;
-        let config: Self = toml::from_str(&content)
+        let mut config: Self = toml::from_str(&content)
             .with_context(|| format!("Invalid layer config {}", path.display()))?;
+        config.base = path.parent().map(Path::to_path_buf).unwrap_or_default();
         config.validate()?;
         Ok(config)
     }
@@ -116,10 +120,16 @@ impl LayersConfig {
             .get(name)
             .with_context(|| format!("Unknown source '{name}' (add it under [sources])"))?;
         let dir = resolve_home(path);
+        let dir = if dir.is_relative() {
+            self.base.join(dir)
+        } else {
+            dir
+        };
         if !dir.is_dir() {
             bail!("Source '{}' not found at {}", name, dir.display());
         }
-        Ok(dir)
+        // Links must carry an absolute target to resolve from a skills dir.
+        Ok(fs::canonicalize(&dir).unwrap_or(dir))
     }
 
     /// Stacks from the root of the `extends` chain down to `name`.
@@ -355,6 +365,21 @@ mod tests {
         let cfg = config(&base_toml(tmp.path(), "{ source = \"personal\" }"));
         let err = cfg.desired_skills("work").err().unwrap().to_string();
         assert!(err.contains("needs a `profile` or `skills`"), "{err}");
+    }
+
+    #[test]
+    fn relative_source_resolves_against_the_config_file() {
+        let tmp = fixture();
+        let file = tmp.path().join("layers.toml");
+        fs::write(
+            &file,
+            "[sources]\npersonal = \"personal\"\n[stack.base]\nlayers = [{ source = \"personal\", profile = \"core\" }]\n",
+        )
+        .unwrap();
+        let cfg = LayersConfig::load(&file).unwrap();
+        let dir = cfg.source_dir("personal").unwrap();
+        assert!(dir.is_absolute());
+        assert_eq!(dir, fs::canonicalize(tmp.path().join("personal")).unwrap());
     }
 
     #[test]
