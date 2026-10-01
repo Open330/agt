@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `-g` manages the user environment in `~/.config/agt/agt.toml`. GitHub
   content is fetched with `gh skill install`; agt restores the executable
   bits it drops and only touches directories marked `.agt-managed`.
+- `agt doctor [--json]` checks every installed skill offline: lock drift,
+  duplicate ids, Agent Skills frontmatter, broken links, non-executable
+  scripts, grouped copies Claude Code ignores, undeclared skills, and the
+  description tokens each agent preloads.
+- `agt adopt` declares and locks a skill installed by `gh skill install`.
 
 ### Changed
 - Claude skills now install flat (`<skills-dir>/<skill>`) instead of
