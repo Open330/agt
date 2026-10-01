@@ -63,7 +63,10 @@ pub struct TargetDef {
 /// One skill the stack wants, and the layer that wants it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesiredSkill {
+    /// Name it installs under (frontmatter `name`, else `dir`).
     pub name: String,
+    /// Directory name inside `<source>/<group>/`.
+    pub dir: String,
     pub layer: String,
     pub source_dir: PathBuf,
     pub group: String,
@@ -71,7 +74,7 @@ pub struct DesiredSkill {
 
 impl DesiredSkill {
     pub fn skill_path(&self) -> PathBuf {
-        self.source_dir.join(&self.group).join(&self.name)
+        self.source_dir.join(&self.group).join(&self.dir)
     }
 }
 
@@ -196,8 +199,10 @@ impl LayersConfig {
                 }
             }
             for (group, name) in pairs {
+                let skill_path = source_dir.join(&group).join(&name);
                 let skill = DesiredSkill {
-                    name: name.clone(),
+                    name: super::install_name(&skill_path, &name),
+                    dir: name.clone(),
                     layer: label.clone(),
                     source_dir: source_dir.clone(),
                     group,
@@ -211,13 +216,13 @@ impl LayersConfig {
                         source_dir.display()
                     );
                 }
-                match desired.iter().position(|d| d.name == name) {
+                match desired.iter().position(|d| d.name == skill.name) {
                     None => desired.push(skill),
                     Some(i) if desired[i].skill_path() == skill.skill_path() => {}
                     Some(i) if layer.override_earlier => desired[i] = skill,
                     Some(i) => bail!(
                         "Skill '{}' comes from both {} and {}; set `override = true` on the later layer to replace it",
-                        name,
+                        skill.name,
                         desired[i].layer,
                         label
                     ),
@@ -236,7 +241,8 @@ mod tests {
         for spec in skills {
             let path = dir.join(spec);
             fs::create_dir_all(&path).unwrap();
-            fs::write(path.join("SKILL.md"), "---\nname: x\n---\n").unwrap();
+            let name = path.file_name().unwrap().to_string_lossy();
+            fs::write(path.join("SKILL.md"), format!("---\nname: {name}\n---\n")).unwrap();
         }
         fs::write(dir.join("profiles.yml"), profiles).unwrap();
     }
@@ -309,6 +315,24 @@ mod tests {
         assert_eq!(
             names(&cfg.desired_skills("work").unwrap()),
             ["commit=team:clash"]
+        );
+    }
+
+    #[test]
+    fn skills_install_under_their_frontmatter_name() {
+        let tmp = fixture();
+        fs::write(
+            tmp.path().join("team/work/commit/SKILL.md"),
+            "---\nname: work-commit\n---\n",
+        )
+        .unwrap();
+        let cfg = config(&base_toml(
+            tmp.path(),
+            "{ source = \"team\", profile = \"clash\" }",
+        ));
+        assert_eq!(
+            names(&cfg.desired_skills("work").unwrap()),
+            ["commit=personal:core", "work-commit=team:clash"]
         );
     }
 

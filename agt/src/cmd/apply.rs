@@ -65,7 +65,7 @@ fn applied_record(skill: &DesiredSkill) -> SkillRecord {
     SkillRecord {
         layer: skill.layer.clone(),
         source: skill.source_dir.display().to_string(),
-        origin: format!("{}/{}", skill.group, skill.name),
+        origin: format!("{}/{}", skill.group, skill.dir),
         mode: InstallMode::Symlink,
         applied: true,
     }
@@ -313,6 +313,7 @@ mod tests {
         fs::write(path.join("SKILL.md"), "---\nname: x\n---\n").unwrap();
         DesiredSkill {
             name: name.to_string(),
+            dir: name.to_string(),
             layer: layer.to_string(),
             source_dir,
             group: "g".to_string(),

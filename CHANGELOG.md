@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Claude skills now install flat (`<skills-dir>/<skill>`) instead of
   `<skills-dir>/<group>/<skill>`, which Claude Code never loaded. Installing a
   skill moves an existing grouped copy to the flat path.
+- Skills install under their frontmatter `name` when it is a valid skill name,
+  so same-named directories in different groups (`billing/notion`,
+  `crm/notion`) no longer collide.
 - The Claude config directory follows `--claude-dir`, then `CLAUDE_CONFIG_DIR`,
   then `~/.claude` for skills, hooks, teams and `settings.json`.
 - Defined `Open330/agt` as the single source of truth for the Rust CLI, npm

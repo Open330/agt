@@ -267,6 +267,26 @@ pub fn skill_destination(target_dir: &Path, skill_name: &str) -> PathBuf {
     target_dir.join(skill_name)
 }
 
+/// Claude Code skill directory names: lowercase letters, digits and hyphens.
+pub fn is_skill_dir_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Directory name a skill installs under: its frontmatter `name` when that is a
+/// valid skill name, else its source directory name. Repositories group skills
+/// by service (`billing/notion`, `crm/notion`), so directory names repeat
+/// across groups while the declared names stay unique.
+pub fn install_name(skill_path: &Path, dir_name: &str) -> String {
+    fs::read_to_string(skill_path.join("SKILL.md"))
+        .ok()
+        .and_then(|content| crate::frontmatter::get_field(&content, "name"))
+        .map(|name| name.trim().trim_matches(['"', '\'']).to_string())
+        .filter(|name| is_skill_dir_name(name))
+        .unwrap_or_else(|| dir_name.to_string())
+}
+
 /// Where agt before 2026.10 put Claude skills: `<target>/<group>/<skill>`.
 /// Claude Code never loads skills from there; kept only for migration.
 pub fn legacy_grouped_destination(target_dir: &Path, group: &str, skill_name: &str) -> PathBuf {
@@ -317,6 +337,18 @@ mod tests {
             legacy_grouped_destination(Path::new("/tmp/skills"), "development", "git-commit-pr"),
             PathBuf::from("/tmp/skills/development/git-commit-pr")
         );
+    }
+
+    #[test]
+    fn install_name_prefers_frontmatter_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill = tmp.path().join("billing/notion");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "---\nname: billing-notion\n---\n").unwrap();
+        assert_eq!(install_name(&skill, "notion"), "billing-notion");
+
+        fs::write(skill.join("SKILL.md"), "---\nname: Not Valid\n---\n").unwrap();
+        assert_eq!(install_name(&skill, "notion"), "notion");
     }
 
     #[test]

@@ -262,7 +262,8 @@ fn install(
 
     fs::create_dir_all(&target_dir)?;
     migrate_legacy_destination(&target_dir, &group, &name, agent)?;
-    let link_path = config::skill_destination(&target_dir, &name);
+    let installed_name = config::install_name(&skill_path, &name);
+    let link_path = config::skill_destination(&target_dir, &installed_name);
 
     util::ensure_target_clear(&link_path, force, &name)?;
 
@@ -274,7 +275,7 @@ fn install(
     record_installed(
         &target_dir,
         vec![(
-            name.clone(),
+            installed_name.clone(),
             skill_record(
                 "manual",
                 source_dir.display().to_string(),
@@ -343,7 +344,8 @@ fn install_remote(
     let group = remote_skill_group(&spec.path);
     fs::create_dir_all(&target_dir)?;
     migrate_legacy_destination(&target_dir, &group, &skill_name, agent)?;
-    let dest = config::skill_destination(&target_dir, &skill_name);
+    let installed_name = config::install_name(&source_path, &skill_name);
+    let dest = config::skill_destination(&target_dir, &installed_name);
 
     util::ensure_target_clear(&dest, force, &skill_name)?;
 
@@ -352,7 +354,7 @@ fn install_remote(
     record_installed(
         &target_dir,
         vec![(
-            skill_name.clone(),
+            installed_name.clone(),
             skill_record(
                 "manual",
                 format!("{}/{}", spec.owner, spec.repo),
@@ -508,7 +510,8 @@ fn install_remote_repo(
         }
 
         migrate_legacy_destination(&target_dir, group, skill_name, agent)?;
-        let dest = config::skill_destination(&target_dir, skill_name);
+        let installed_name = config::install_name(&source_path, skill_name);
+        let dest = config::skill_destination(&target_dir, &installed_name);
 
         if dest.exists() || dest.is_symlink() {
             if force {
@@ -532,7 +535,7 @@ fn install_remote_repo(
         };
         remote::write_metadata(&dest, &skill_spec)?;
         recorded.push((
-            skill_name.clone(),
+            installed_name.clone(),
             skill_record(
                 profile.unwrap_or("manual"),
                 format!("{}/{}", spec.owner, spec.repo),
@@ -882,14 +885,6 @@ fn migrate_legacy_destination(
     Ok(())
 }
 
-/// Claude Code skill directory names: lowercase letters, digits and hyphens.
-/// Anything else under a group dir (backups, notes) is left where it is.
-fn is_skill_dir_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-}
-
 #[derive(Debug, Default, PartialEq)]
 struct MigrationPlan {
     moves: Vec<(PathBuf, PathBuf)>,
@@ -933,7 +928,7 @@ fn plan_migration(target_dir: &Path) -> MigrationPlan {
             if name.starts_with('.') || !child.join("SKILL.md").exists() {
                 continue;
             }
-            if !is_skill_dir_name(&name) {
+            if !config::is_skill_dir_name(&name) {
                 plan.ignored.push(child);
                 continue;
             }
@@ -1256,7 +1251,8 @@ fn link_skills(
         }
 
         migrate_legacy_destination(&target_dir, group, skill_name, agent)?;
-        let link_path = config::skill_destination(&target_dir, skill_name);
+        let installed_name = config::install_name(&skill_path, skill_name);
+        let link_path = config::skill_destination(&target_dir, &installed_name);
 
         if link_path.exists() || link_path.is_symlink() {
             if force {
@@ -1276,7 +1272,7 @@ fn link_skills(
             group, skill_name
         ))?;
         recorded.push((
-            skill_name.clone(),
+            installed_name.clone(),
             skill_record(
                 layer,
                 source_dir.display().to_string(),
@@ -2112,10 +2108,8 @@ fn print_flat(entries: &[serde_json::Value]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        is_skill_dir_name, migrate_legacy_destination, plan_migration, remote_skill_group,
-        skills_named,
-    };
+    use super::{migrate_legacy_destination, plan_migration, remote_skill_group, skills_named};
+    use crate::config::is_skill_dir_name;
     use crate::config::SkillAgent;
     use std::fs;
     use std::path::Path;
