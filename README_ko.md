@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/Open330/agt/main/setup.sh \
 ## 스킬 설치
 
 ```bash
-# Claude: ~/.claude/skills 아래 그룹형 구조
+# Claude: ~/.claude/skills(또는 $CLAUDE_CONFIG_DIR/skills) 아래 평면형 구조
 agt skill install --profile core \
   --from jiunbae/agent-skills --global
 
@@ -51,7 +51,20 @@ agt skill update --agent codex
 
 원격 설치본에는 `.remote-source`가 기록되므로 이후 `agt skill update`로
 갱신할 수 있습니다. `agent-skills`의 `agt.toml` 규칙은 기존 사용자
-파일을 덮어쓰지 않고 static context를 병합합니다.
+파일을 덮어쓰지 않고 static context를 병합합니다. 건너뛰려면 `--no-static`을
+사용합니다.
+
+Claude Code는 `<skills-dir>/<skill>/SKILL.md`만 읽습니다. 이전 agt가
+`<group>/<skill>` 구조로 설치한 스킬은 로드되지 않으므로 다음으로 옮깁니다.
+
+```bash
+agt skill migrate --global --dry-run   # 미리 보기
+agt skill migrate --global
+```
+
+`~/.claude`가 아닌 Claude 설정 디렉터리를 쓰려면 `--claude-dir <dir>`(또는
+`CLAUDE_CONFIG_DIR`)을 지정합니다. 스킬, 훅, 팀, `settings.json`에 모두
+적용됩니다.
 
 ## 로컬 소스 탐색 순서
 

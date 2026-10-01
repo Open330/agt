@@ -79,9 +79,9 @@ fn suggest_static_index() {
             if let Some(source_dir) = config::find_source_dir().or_else(config::find_cwd_source_dir) {
                 let skill_path = source_dir.join("context").join("static-index");
                 if skill_path.is_dir() && skill_path.join("SKILL.md").exists() {
-                    let target = config::global_skill_target().join("context");
+                    let target = config::global_skill_target();
                     let _ = fs::create_dir_all(&target);
-                    let link_path = target.join("static-index");
+                    let link_path = config::skill_destination(&target, "static-index");
                     if !link_path.exists() && !link_path.is_symlink() {
                         if symlink(&skill_path, &link_path).is_ok() {
                             ui::success("Installed skill 'context/static-index' (global)");

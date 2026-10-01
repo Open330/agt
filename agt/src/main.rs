@@ -15,6 +15,11 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(name = "agt", about = "agt — A modular toolkit for extending AI coding agents")]
 #[command(version = VERSION)]
 struct Cli {
+    /// Claude Code config directory for skills, hooks, teams and settings.json
+    /// (default: $CLAUDE_CONFIG_DIR, then ~/.claude)
+    #[arg(long, global = true, value_name = "DIR")]
+    claude_dir: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -39,7 +44,7 @@ enum Commands {
             Team templates define: teammates (roles), tasks (work items), hooks, and settings.\n\n\
             Template locations (searched in order):\n  \
               .claude/teams/           Project-local (highest priority)\n  \
-              ~/.claude/teams/         User global\n  \
+              <claude-dir>/teams/      User global (~/.claude unless --claude-dir/CLAUDE_CONFIG_DIR)\n  \
               teams/                   Local source checkout\n\n\
             Quick start:\n  \
               agt team enable           Enable agent teams in Claude Code\n  \
@@ -99,6 +104,9 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
+    if let Some(dir) = cli.claude_dir.as_deref() {
+        config::set_claude_dir_override(dir);
+    }
 
     let result = match cli.command {
         Commands::Skill { action } => cmd::skill::execute(action),
@@ -409,9 +417,7 @@ fn complete_names(kind: &str) {
                 collect_yaml_names(&source_dir.join("teams"), &mut names);
             }
             // Global templates
-            let global_dir = dirs::home_dir()
-                .unwrap_or_default()
-                .join(".claude/teams");
+            let global_dir = config::global_team_target();
             collect_yaml_names(&global_dir, &mut names);
             // Local templates
             collect_yaml_names(&std::path::PathBuf::from(".claude/teams"), &mut names);

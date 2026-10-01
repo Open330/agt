@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/Open330/agt/main/setup.sh \
 ## Install Skills
 
 ```bash
-# Claude (grouped layout under ~/.claude/skills)
+# Claude (flat layout under ~/.claude/skills, or $CLAUDE_CONFIG_DIR/skills)
 agt skill install --profile core \
   --from jiunbae/agent-skills --global
 
@@ -51,7 +51,19 @@ agt skill update --agent codex
 
 Remote installs write `.remote-source` metadata so `agt skill update` can
 refresh them later. Repository `agt.toml` setup rules merge static context
-without replacing existing user files.
+without replacing existing user files. Pass `--no-static` to skip them.
+
+Claude Code loads only `<skills-dir>/<skill>/SKILL.md`. Skills that older agt
+versions installed as `<group>/<skill>` are invisible to it; move them with:
+
+```bash
+agt skill migrate --global --dry-run   # preview
+agt skill migrate --global
+```
+
+Use `--claude-dir <dir>` (or `CLAUDE_CONFIG_DIR`) to target a Claude config
+directory other than `~/.claude`; it applies to skills, hooks, teams and
+`settings.json`.
 
 ## Source Discovery
 

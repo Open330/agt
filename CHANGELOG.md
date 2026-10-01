@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Claude skills now install flat (`<skills-dir>/<skill>`) instead of
+  `<skills-dir>/<group>/<skill>`, which Claude Code never loaded. Installing a
+  skill moves an existing grouped copy to the flat path.
+- The Claude config directory follows `--claude-dir`, then `CLAUDE_CONFIG_DIR`,
+  then `~/.claude` for skills, hooks, teams and `settings.json`.
 - Defined `Open330/agt` as the single source of truth for the Rust CLI, npm
   packages, platform binaries, and release automation.
 - Replaced the legacy catalog installer with an npm CLI bootstrap that can
@@ -21,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the inactive Darwin x64 platform manifest.
 
 ### Added
+- `agt skill migrate [--global] [--dry-run]` moves grouped Claude skills to the
+  flat layout; conflicts and non-skill names (backups) are left in place.
+- `--no-static` on `agt skill install` skips the source repo's `[[setup.copy]]`
+  rules.
+- Global `--claude-dir <dir>` option.
 - `agt skill` 명령의 `--agent codex` 설치·조회·제거·업데이트 지원
 - 원격 저장소의 프로필을 바로 설치하는 `--from <repo> --profile <name>` 조합
 
