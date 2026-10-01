@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--no-static` on `agt skill install` skips the source repo's `[[setup.copy]]`
   rules.
 - Global `--claude-dir <dir>` option.
+- `agt apply [--target <path>] [--dry-run|--check]` converges skill directories
+  to the stacks in `~/.config/agt/layers.toml`: links, adopts and prunes only
+  what it manages, installs directory targets into each git repo below them
+  (excluded via `.git/info/exclude`), and runs static copy only for the global
+  target.
+- `agt gate <dir> -- <cmd>` runs a hook command only inside a directory tree.
 - `agt skill status [--global] [--json]` lists what agt installed in a skills
   directory with its layer and source, plus unmanaged and missing entries and
   any skills still in the old grouped layout. Installs and uninstalls record

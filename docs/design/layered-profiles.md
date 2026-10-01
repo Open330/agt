@@ -1,6 +1,8 @@
 # Layered profiles and declarative `agt apply`
 
-Status: draft (2026-10-01)
+Status: implemented (2026-10-01). Differences from the first draft are noted
+under "Decisions after implementation".
+
 
 ## Problem
 
@@ -45,7 +47,7 @@ User-level, private, never committed to a public repo:
 
 ```toml
 [sources]
-personal = "~/workspace/agent-skills"     # local path or owner/repo
+personal = "~/workspace/agent-skills"     # local path
 team     = "~/src/team-agents"
 
 [stack.base]                               # applied to the global target
@@ -59,7 +61,6 @@ static = ["personal"]                      # whose [[setup.copy]] rules may run
 extends = "base"
 layers  = [{ source = "team", profile = "team-core" }]
 static  = ["team"]
-hooks   = ["team"]
 
 [[target]]
 path  = "global"                           # $CLAUDE_CONFIG_DIR or ~/.claude
@@ -83,14 +84,16 @@ dev:
 | Command | Effect |
 |---|---|
 | `agt apply [--target <path>\|--all] [--dry-run]` | Converge the target(s) to their stack. |
-| `agt status [--target <path>]` | Show stack, layers, installed skills and their layer, drift. |
+| `agt skill status [--global]` | Show stack, installed skills and their layer, unmanaged and missing entries. |
+| `agt gate <dir> -- <cmd>` | Run a hook command only inside a directory tree. |
 | `agt skill install --profile a,b` | Comma list; shorthand for an ad-hoc stack. |
 | `--claude-dir <dir>` (global flag) | Override the Claude config dir; default `$CLAUDE_CONFIG_DIR`, then `~/.claude`. |
 | `--no-static` (install/apply) | Skip `[[setup.copy]]`. |
 
 ## State
 
-Each target gets `<target>/.claude/agt-state.json` (global: `<claude-dir>/agt-state.json`):
+Each skills directory gets `agt-state.json` beside it (global:
+`<claude-dir>/agt-state.json`, a repo: `<repo>/.claude/agt-state.json`):
 
 ```json
 { "version": 1,
@@ -123,7 +126,7 @@ Consequences for a target like `~/work`:
   does not work, `apply` installs the layer into each git repo under the target
   (`<repo>/.claude/skills`, added to `.git/info/exclude`), recorded in state.
 - Hooks: settings do not cascade, so a directory-scoped hook must be installed
-  globally and gate itself. agt ships a tiny `agt hook-gate <target>` wrapper:
+  globally and gate itself. agt ships a tiny `agt gate <target> -- <cmd>` wrapper:
   the hook command runs only when `$CLAUDE_PROJECT_DIR` is under the target.
 - Instructions: a layer may ship a `CLAUDE.md` fragment placed at the target
   root; ancestor loading makes it apply to every session below.
@@ -138,8 +141,28 @@ Consequences for a target like `~/work`:
 
 Each step ships independently and keeps existing commands working.
 
+## Decisions after implementation
+
+- **Ancestor discovery does not work.** Tested on Claude Code (2026-10-01): a
+  session started in a git repo below a directory with `.claude/skills` does
+  not see those skills; a session started in that directory does. Directory
+  targets therefore install into the directory itself and into every git repo
+  directly below it, each with its own state file and `.git/info/exclude`
+  block.
+- **Ownership.** Records carry `applied: true` when `agt apply` made them. Only
+  those are relinked or pruned; `agt skill install` records and unmanaged
+  entries are left alone, and a correct existing symlink is adopted.
+- **Static files** run only when a stack is applied to the `global` target, so
+  a directory-scoped layer cannot write to `~/.agents`.
+- **Hooks** are not installed by layers. `agt gate` is the building block; a
+  team wraps its own hook command with it.
+- **Sources** are local paths for now; `owner/repo` sources are future work.
+- **Status** is `agt skill status` per directory rather than a top-level
+  command.
+
 ## Open questions
 
-- Ancestor skill discovery: test on current Claude Code before step 4.
 - Codex: same model with `~/.agents/skills` as the global target; directory
   scoping for Codex is out of scope until its discovery rules are confirmed.
+- Remote (`owner/repo`) layer sources, and nested repos deeper than one level
+  below a directory target.

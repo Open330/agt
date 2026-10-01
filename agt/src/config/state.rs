@@ -29,6 +29,10 @@ pub struct SkillRecord {
     /// `group/skill` inside the source.
     pub origin: String,
     pub mode: InstallMode,
+    /// Installed by `agt apply`, which may also remove it again. Other
+    /// installs are never pruned.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub applied: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -98,6 +102,7 @@ mod tests {
             source: "/src".to_string(),
             origin: "dev/a".to_string(),
             mode: InstallMode::Symlink,
+            applied: false,
         }
     }
 

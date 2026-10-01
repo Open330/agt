@@ -86,6 +86,59 @@ full:
 `agt skill install --profile core,full`은 여러 프로필의 합집합을 설치합니다.
 `all`은 저장소의 모든 스킬입니다.
 
+## 레이어
+
+`agt apply`는 머신별 비공개 파일 `~/.config/agt/layers.toml`(`AGT_LAYERS`로
+변경 가능)에 맞춰 스킬 디렉터리를 정리합니다. **레이어**는 소스 하나의 프로필
+하나, **스택**은 레이어의 순서 있는 목록, **타깃**은 스택을 전역 스킬 디렉터리나
+디렉터리 트리에 적용하는 단위입니다.
+
+```toml
+[sources]
+personal = "~/workspace/agent-skills"
+team     = "~/work/agents"
+
+[stack.base]
+layers = [{ source = "personal", profile = "core,dev" }]
+static = ["personal"]            # 전역 타깃에 적용할 때 이 소스의 [[setup.copy]] 실행
+
+[stack.work]
+extends = "base"
+layers  = [{ source = "team", profile = "team-core" }]
+
+[[target]]
+path  = "global"
+stack = "base"
+
+[[target]]
+path  = "~/work"                 # 하위 git 리포에 work 스택 적용
+stack = "work"
+```
+
+```bash
+agt apply --dry-run      # 계획만 보기
+agt apply                # 링크, 등록(adopt), 제거(prune)
+agt apply --check        # 바뀔 것이 있으면 exit 1
+```
+
+- Claude Code는 세션을 시작한 디렉터리의 프로젝트 스킬만 읽습니다. 그래서
+  디렉터리 타깃은 `<dir>/.claude/skills`와 그 바로 아래 각 git 리포에 설치하고,
+  링크는 각 리포의 `.git/info/exclude`에 추가합니다.
+- `apply`는 자신이 설치한 스킬(`agt-state.json`에 기록)만 제거합니다. 다른 것이
+  같은 이름을 차지하고 있으면 덮어쓰지 않고 경고만 냅니다.
+- 두 레이어가 같은 이름의 스킬을 제공하면 오류입니다. 뒤 레이어에
+  `override = true`를 지정하면 교체합니다.
+
+훅은 사용자 설정과 세션 자신의 디렉터리에서만 읽고 상위 디렉터리에서는 읽지
+않습니다. 전역 훅을 특정 트리에서만 실행하려면 명령을 감쌉니다.
+
+```json
+{ "type": "command", "command": "agt gate ~/work -- ~/work/agents/scripts/digest.sh" }
+```
+
+`agt gate`는 `$CLAUDE_PROJECT_DIR`이 해당 디렉터리 안일 때만 명령을 실행하고,
+그 밖에서는 아무것도 출력하지 않고 0으로 종료합니다.
+
 ## 로컬 소스 탐색 순서
 
 1. `AGT_DIR` 또는 `AGENT_SKILLS_DIR`

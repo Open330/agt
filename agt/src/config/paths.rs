@@ -38,7 +38,8 @@ fn resolve_claude_config_dir(
     home.unwrap_or_else(|| PathBuf::from("~")).join(".claude")
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SkillAgent {
     #[default]
     Claude,

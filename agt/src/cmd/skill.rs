@@ -572,7 +572,7 @@ fn skills_named(all_skills: &[(String, String)], requested_name: &str) -> Vec<(S
 }
 
 /// Execute [[setup.copy]] rules from agt.toml in the given directory.
-fn run_manifest_setup(repo_root: &Path) -> Result<()> {
+pub(crate) fn run_manifest_setup(repo_root: &Path) -> Result<()> {
     let manifest = match config::parse_manifest(repo_root)? {
         Some(m) => m,
         None => return Ok(()),
@@ -1411,6 +1411,7 @@ fn skill_record(
         source,
         origin,
         mode,
+        applied: false,
     }
 }
 
@@ -2230,6 +2231,7 @@ mod tests {
                     source: "/src".into(),
                     origin: format!("dev/{name}"),
                     mode: InstallMode::Symlink,
+                    applied: false,
                 },
             );
         }

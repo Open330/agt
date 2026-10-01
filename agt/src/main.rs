@@ -76,6 +76,26 @@ enum Commands {
         #[command(subcommand)]
         action: cmd::persona::PersonaAction,
     },
+    /// Make skill directories match ~/.config/agt/layers.toml (install, adopt, prune)
+    Apply {
+        /// Only this target (`global` or a directory from layers.toml)
+        #[arg(long, value_name = "PATH")]
+        target: Option<String>,
+        /// Show the plan without changing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Exit non-zero when anything would change (implies --dry-run)
+        #[arg(long)]
+        check: bool,
+    },
+    /// Run a command only when the Claude Code session is inside DIR (for hooks)
+    Gate {
+        /// Directory the session must be in ($CLAUDE_PROJECT_DIR, else cwd)
+        dir: String,
+        /// Command and arguments, after `--`
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
     /// Run prompt with skill matching
     Run {
         /// The prompt to execute
@@ -113,6 +133,12 @@ fn main() {
         Commands::Hook { action } => cmd::hook::execute(action),
         Commands::Team { action } => cmd::team::execute(action),
         Commands::Persona { action } => cmd::persona::execute(action),
+        Commands::Apply {
+            target,
+            dry_run,
+            check,
+        } => cmd::apply::execute(target.as_deref(), dry_run, check),
+        Commands::Gate { dir, command } => cmd::gate::execute(&dir, &command),
         Commands::Run { prompt, skill, llm } => {
             cmd::run::execute(&prompt.join(" "), skill.as_deref(), llm.as_deref())
         }
