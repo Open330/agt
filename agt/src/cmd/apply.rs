@@ -201,7 +201,10 @@ fn target_skill_dirs(target: &config::TargetDef) -> Result<Vec<(PathBuf, Option<
         bail!("Target directory {} does not exist", root.display());
     }
     let sub = agent_skills_subdir(target.agent);
-    let mut dirs = vec![(root.join(sub), None)];
+    // The target itself may be a repository (a single app) rather than a
+    // directory of repositories; either way its links stay out of git.
+    let root_repo = root.join(".git").exists().then(|| root.clone());
+    let mut dirs = vec![(root.join(sub), root_repo)];
     let mut repos: Vec<PathBuf> = fs::read_dir(&root)?
         .flatten()
         .map(|e| e.path())
@@ -306,12 +309,15 @@ pub fn execute(only: Option<&str>, dry_run: bool, check: bool) -> Result<()> {
             pending += actions.iter().filter(|a| a.changes()).count();
             print_actions(&skills_dir, &actions, dry_run);
             let stack_changed = state.stack.as_deref() != Some(target.stack.as_str());
-            if dry_run || (!stack_changed && !actions.iter().any(Action::changes)) {
+            if dry_run {
                 continue;
             }
-            execute_actions(&skills_dir, &actions, &mut state)?;
-            state.stack = Some(target.stack.clone());
-            state.save(&skills_dir)?;
+            if stack_changed || actions.iter().any(Action::changes) {
+                execute_actions(&skills_dir, &actions, &mut state)?;
+                state.stack = Some(target.stack.clone());
+                state.save(&skills_dir)?;
+            }
+            // Idempotent, so it also repairs repos linked before they were excluded.
             if let Some(repo) = repo {
                 update_git_exclude(&repo, &skills_dir, &state)?;
             }
@@ -430,6 +436,27 @@ mod tests {
         assert!(skills_dir.join("managing-vault/SKILL.md").exists());
         assert!(!skills_dir.join("vault").is_symlink());
         assert!(state.skills["managing-vault"].applied);
+    }
+
+    #[test]
+    fn target_that_is_a_repo_excludes_its_own_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("app");
+        fs::create_dir_all(app.join(".git")).unwrap();
+        fs::create_dir_all(app.join("module/.git")).unwrap();
+        let target = config::TargetDef {
+            path: app.display().to_string(),
+            stack: "ios".into(),
+            agent: SkillAgent::Claude,
+        };
+        let dirs = target_skill_dirs(&target).unwrap();
+        assert_eq!(
+            dirs,
+            vec![
+                (app.join(".claude/skills"), Some(app.clone())),
+                (app.join("module/.claude/skills"), Some(app.join("module"))),
+            ]
+        );
     }
 
     #[test]
