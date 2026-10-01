@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Claude skills now install flat (`<skills-dir>/<skill>`) instead of
+  `<skills-dir>/<group>/<skill>`, which Claude Code never loaded. Installing a
+  skill moves an existing grouped copy to the flat path.
+- Skills install under their frontmatter `name` when it is a valid skill name,
+  so same-named directories in different groups (`billing/notion`,
+  `crm/notion`) no longer collide.
+- The Claude config directory follows `--claude-dir`, then `CLAUDE_CONFIG_DIR`,
+  then `~/.claude` for skills, hooks, teams and `settings.json`.
 - Defined `Open330/agt` as the single source of truth for the Rust CLI, npm
   packages, platform binaries, and release automation.
 - Replaced the legacy catalog installer with an npm CLI bootstrap that can
@@ -21,10 +29,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the inactive Darwin x64 platform manifest.
 
 ### Added
+- `agt skill migrate [--global] [--dry-run]` moves grouped Claude skills to the
+  flat layout; conflicts and non-skill names (backups) are left in place.
+- `--no-static` on `agt skill install` skips the source repo's `[[setup.copy]]`
+  rules.
+- Global `--claude-dir <dir>` option.
+- `agt apply [--target <path>] [--dry-run|--check]` converges skill directories
+  to the stacks in `~/.config/agt/layers.toml`: links, adopts and prunes only
+  what it manages, installs directory targets into each git repo below them
+  (excluded via `.git/info/exclude`), and runs static copy only for the global
+  target.
+- `agt gate <dir> -- <cmd>` runs a hook command only inside a directory tree.
+- A layer can list `skills = ["group/skill", ...]` instead of, or after, a
+  `profile`, for machine-local picks that do not belong in a shared profile.
+- `agt skill status [--global] [--json]` lists what agt installed in a skills
+  directory with its layer and source, plus unmanaged and missing entries and
+  any skills still in the old grouped layout. Installs and uninstalls record
+  this in `agt-state.json` beside the skills directory.
+- Profiles can `extends: <name>` or `extends: [a, b]` (same source; cycles are
+  an error), and `--profile` accepts a comma list such as `core,dev`.
 - `agt skill` 명령의 `--agent codex` 설치·조회·제거·업데이트 지원
 - 원격 저장소의 프로필을 바로 설치하는 `--from <repo> --profile <name>` 조합
 
 ### Fixed
+- `agt skill uninstall <name>` removes the skill of that name instead of a
+  same-named virtual group (e.g. a skill called `other`).
+- Extra profile `*.yml` files merge in sorted order, so a profile defined twice
+  resolves the same way everywhere.
+- The built-in `core` profile no longer lists the retired `context-manager`.
 - Linux ARM64 npm 선택 패키지가 설치되어도 wrapper가 바이너리를 찾지 못하던 문제
 
 ### Changed

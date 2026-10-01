@@ -372,7 +372,10 @@ fn create(
 
 fn enable() -> Result<()> {
     set_teams_setting(true)?;
-    ui::success("Agent teams enabled in ~/.claude/settings.json");
+    ui::success(&format!(
+        "Agent teams enabled in {}",
+        config::claude_settings_path().display()
+    ));
     ui::info("Set env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = \"1\"");
     eprintln!();
     ui::info("Restart Claude Code for the change to take effect.");
@@ -382,7 +385,10 @@ fn enable() -> Result<()> {
 
 fn disable() -> Result<()> {
     set_teams_setting(false)?;
-    ui::success("Agent teams disabled in ~/.claude/settings.json");
+    ui::success(&format!(
+        "Agent teams disabled in {}",
+        config::claude_settings_path().display()
+    ));
     Ok(())
 }
 
@@ -440,7 +446,7 @@ fn status() -> Result<()> {
     eprintln!("  {} {}", "Templates available:".bold(), templates.len());
 
     // Check for active teams
-    let teams_dir = dirs::home_dir().unwrap_or_default().join(".claude/teams");
+    let teams_dir = config::global_team_target();
     if teams_dir.exists() {
         if let Ok(entries) = fs::read_dir(&teams_dir) {
             let active: Vec<String> = entries
@@ -564,7 +570,7 @@ fn load_all_templates() -> Result<BTreeMap<String, TeamTemplate>> {
     }
 
     // 2. Global user templates
-    let global_dir = dirs::home_dir().unwrap_or_default().join(".claude/teams");
+    let global_dir = config::global_team_target();
     load_templates_from_dir(&global_dir, &mut templates)?;
 
     // 3. Project-local templates (highest priority)

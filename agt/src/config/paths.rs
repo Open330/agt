@@ -1,8 +1,45 @@
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
+use super::resolve_home;
+
+static CLAUDE_DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Set by the global `--claude-dir` flag before any command runs.
+pub fn set_claude_dir_override(dir: &str) {
+    let _ = CLAUDE_DIR_OVERRIDE.set(resolve_home(dir));
+}
+
+/// Claude Code's user config directory: `--claude-dir`, then
+/// `$CLAUDE_CONFIG_DIR`, then `~/.claude`. Skills, hooks, teams and
+/// `settings.json` all live under it.
+pub fn claude_config_dir() -> PathBuf {
+    resolve_claude_config_dir(
+        CLAUDE_DIR_OVERRIDE.get().map(PathBuf::as_path),
+        std::env::var_os("CLAUDE_CONFIG_DIR"),
+        dirs::home_dir(),
+    )
+}
+
+fn resolve_claude_config_dir(
+    flag: Option<&Path>,
+    env: Option<OsString>,
+    home: Option<PathBuf>,
+) -> PathBuf {
+    if let Some(dir) = flag {
+        return dir.to_path_buf();
+    }
+    if let Some(dir) = env.filter(|v| !v.is_empty()) {
+        return resolve_home(&dir.to_string_lossy());
+    }
+    home.unwrap_or_else(|| PathBuf::from("~")).join(".claude")
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SkillAgent {
     #[default]
     Claude,
@@ -196,9 +233,11 @@ pub fn local_skill_target() -> PathBuf {
 }
 
 pub fn global_skill_target() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("~"))
-        .join(".claude/skills")
+    claude_config_dir().join("skills")
+}
+
+pub fn global_team_target() -> PathBuf {
+    claude_config_dir().join("teams")
 }
 
 pub fn local_codex_skill_target() -> PathBuf {
@@ -222,18 +261,36 @@ pub fn skill_target(global: bool, agent: SkillAgent) -> PathBuf {
     }
 }
 
-/// Claude supports grouped skill directories. Codex discovers direct children
-/// of `.agents/skills`, so Codex destinations must remain flat.
-pub fn skill_destination(
-    target_dir: &Path,
-    group: &str,
-    skill_name: &str,
-    agent: SkillAgent,
-) -> PathBuf {
-    match agent {
-        SkillAgent::Claude if !group.is_empty() => target_dir.join(group).join(skill_name),
-        _ => target_dir.join(skill_name),
-    }
+/// Claude Code and Codex both discover only direct children of their skills
+/// directory (`<dir>/<skill>/SKILL.md`), so every destination is flat.
+pub fn skill_destination(target_dir: &Path, skill_name: &str) -> PathBuf {
+    target_dir.join(skill_name)
+}
+
+/// Claude Code skill directory names: lowercase letters, digits and hyphens.
+pub fn is_skill_dir_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Directory name a skill installs under: its frontmatter `name` when that is a
+/// valid skill name, else its source directory name. Repositories group skills
+/// by service (`billing/notion`, `crm/notion`), so directory names repeat
+/// across groups while the declared names stay unique.
+pub fn install_name(skill_path: &Path, dir_name: &str) -> String {
+    fs::read_to_string(skill_path.join("SKILL.md"))
+        .ok()
+        .and_then(|content| crate::frontmatter::get_field(&content, "name"))
+        .map(|name| name.trim().trim_matches(['"', '\'']).to_string())
+        .filter(|name| is_skill_dir_name(name))
+        .unwrap_or_else(|| dir_name.to_string())
+}
+
+/// Where agt before 2026.10 put Claude skills: `<target>/<group>/<skill>`.
+/// Claude Code never loads skills from there; kept only for migration.
+pub fn legacy_grouped_destination(target_dir: &Path, group: &str, skill_name: &str) -> PathBuf {
+    target_dir.join(group).join(skill_name)
 }
 
 /// Persona paths
@@ -255,15 +312,11 @@ pub fn global_persona_target() -> PathBuf {
 
 /// Hook paths
 pub fn global_hook_target() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("~"))
-        .join(".claude/hooks")
+    claude_config_dir().join("hooks")
 }
 
 pub fn claude_settings_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("~"))
-        .join(".claude/settings.json")
+    claude_config_dir().join("settings.json")
 }
 
 #[cfg(test)]
@@ -271,28 +324,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn claude_destination_preserves_group() {
+    fn destination_is_flat() {
         assert_eq!(
-            skill_destination(
-                Path::new("/tmp/skills"),
-                "development",
-                "git-commit-pr",
-                SkillAgent::Claude,
-            ),
+            skill_destination(Path::new("/tmp/skills"), "git-commit-pr"),
+            PathBuf::from("/tmp/skills/git-commit-pr")
+        );
+    }
+
+    #[test]
+    fn legacy_destination_keeps_group() {
+        assert_eq!(
+            legacy_grouped_destination(Path::new("/tmp/skills"), "development", "git-commit-pr"),
             PathBuf::from("/tmp/skills/development/git-commit-pr")
         );
     }
 
     #[test]
-    fn codex_destination_is_flat() {
+    fn install_name_prefers_frontmatter_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill = tmp.path().join("billing/notion");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "---\nname: billing-notion\n---\n").unwrap();
+        assert_eq!(install_name(&skill, "notion"), "billing-notion");
+
+        fs::write(skill.join("SKILL.md"), "---\nname: Not Valid\n---\n").unwrap();
+        assert_eq!(install_name(&skill, "notion"), "notion");
+    }
+
+    #[test]
+    fn claude_dir_flag_wins_over_env() {
         assert_eq!(
-            skill_destination(
-                Path::new("/tmp/skills"),
-                "development",
-                "git-commit-pr",
-                SkillAgent::Codex,
+            resolve_claude_config_dir(
+                Some(Path::new("/flag")),
+                Some(OsString::from("/env")),
+                Some(PathBuf::from("/home/u")),
             ),
-            PathBuf::from("/tmp/skills/git-commit-pr")
+            PathBuf::from("/flag")
+        );
+    }
+
+    #[test]
+    fn claude_dir_env_wins_over_home() {
+        assert_eq!(
+            resolve_claude_config_dir(
+                None,
+                Some(OsString::from("/env")),
+                Some(PathBuf::from("/home/u"))
+            ),
+            PathBuf::from("/env")
+        );
+    }
+
+    #[test]
+    fn claude_dir_empty_env_falls_back_to_home() {
+        assert_eq!(
+            resolve_claude_config_dir(None, Some(OsString::new()), Some(PathBuf::from("/home/u"))),
+            PathBuf::from("/home/u/.claude")
         );
     }
 }

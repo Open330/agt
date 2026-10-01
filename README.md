@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/Open330/agt/main/setup.sh \
 ## Install Skills
 
 ```bash
-# Claude (grouped layout under ~/.claude/skills)
+# Claude (flat layout under ~/.claude/skills, or $CLAUDE_CONFIG_DIR/skills)
 agt skill install --profile core \
   --from jiunbae/agent-skills --global
 
@@ -53,7 +53,100 @@ agt skill update --agent codex
 
 Remote installs write `.remote-source` metadata so `agt skill update` can
 refresh them later. Repository `agt.toml` setup rules merge static context
-without replacing existing user files.
+without replacing existing user files. Pass `--no-static` to skip them.
+
+Claude Code loads only `<skills-dir>/<skill>/SKILL.md`. Skills that older agt
+versions installed as `<group>/<skill>` are invisible to it; move them with:
+
+```bash
+agt skill migrate --global --dry-run   # preview
+agt skill migrate --global
+```
+
+`agt skill status --global` shows each installed skill with the profile it came
+from (recorded in `agt-state.json` next to the skills directory) and flags
+entries agt did not install.
+
+Use `--claude-dir <dir>` (or `CLAUDE_CONFIG_DIR`) to target a Claude config
+directory other than `~/.claude`; it applies to skills, hooks, teams and
+`settings.json`.
+
+## Profiles
+
+A skills repository defines profiles in `profiles.yml` (and any other root
+`*.yml`):
+
+```yaml
+core:
+  description: "Essential skills"
+  skills: [development/git-commit-pr, security/security-auditor]
+
+full:
+  extends: core          # or a list: [core, dev]
+  groups: [agents, development]
+```
+
+`agt skill install --profile core,full` installs the union of several
+profiles; `all` is every skill in the repository.
+
+## Layers
+
+`agt apply` makes skill directories match a private, per-machine file,
+`~/.config/agt/layers.toml` (override with `AGT_LAYERS`). A **layer** is one
+profile from one source; a **stack** is an ordered list of layers; a
+**target** applies a stack to the global skill directory or to a directory
+tree.
+
+```toml
+[sources]
+personal = "~/workspace/agent-skills"
+team     = "~/work/agents"
+
+[stack.base]
+layers = [
+  { source = "personal", profile = "core,dev" },
+  { source = "personal", skills = ["integrations/vault-secrets"] },  # one-off picks
+]
+static = ["personal"]            # run this source's [[setup.copy]] on the global target
+
+[stack.work]
+extends = "base"
+layers  = [{ source = "team", profile = "team-core" }]
+
+[[target]]
+path  = "global"
+stack = "base"
+
+[[target]]
+path  = "~/work"                 # its git repos get the work stack
+stack = "work"
+```
+
+```bash
+agt apply --dry-run      # show the plan
+agt apply                # link, adopt, prune
+agt apply --check        # exit 1 if anything would change
+```
+
+- Claude Code reads project skills only from the directory a session starts
+  in, so a directory target is installed into `<dir>/.claude/skills` **and**
+  each git repository directly under it; the links are added to that repo's
+  `.git/info/exclude`.
+- `apply` only removes skills it installed itself (recorded in
+  `agt-state.json`). A name already taken by something else is skipped with a
+  warning, never overwritten.
+- Two layers providing the same skill name is an error unless the later layer
+  sets `override = true`.
+
+Hooks are read from user settings and the session's own directory, never from
+parent directories. To limit a global hook to one tree, wrap its command:
+
+```json
+{ "type": "command", "command": "agt gate ~/work -- ~/work/agents/scripts/digest.sh" }
+```
+
+`agt gate` runs the command only when `$CLAUDE_PROJECT_DIR` is inside the
+directory and otherwise exits 0 silently.
 
 ## Source Discovery
 

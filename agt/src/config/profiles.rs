@@ -7,10 +7,30 @@ use std::path::Path;
 pub struct ProfileDef {
     #[serde(default)]
     pub description: String,
+    /// Profiles from the same source whose skills come first: `extends: core`
+    /// or `extends: [core, dev]`.
+    #[serde(default, deserialize_with = "one_or_many")]
+    pub extends: Vec<String>,
     #[serde(default)]
     pub skills: Vec<String>,
     #[serde(default)]
     pub groups: Vec<String>,
+}
+
+fn one_or_many<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(name) => vec![name],
+        OneOrMany::Many(names) => names,
+    })
 }
 
 #[allow(dead_code)]
@@ -26,9 +46,9 @@ fn builtin_profiles() -> BTreeMap<String, ProfileDef> {
         "core".to_string(),
         ProfileDef {
             description: "Essential skills for every workspace".to_string(),
+            extends: vec![],
             skills: vec![
                 "development/git-commit-pr".into(),
-                "context/context-manager".into(),
                 "context/static-index".into(),
                 "security/security-auditor".into(),
                 "agents/background-implementer".into(),
@@ -64,7 +84,8 @@ fn load_profiles_file(source_dir: &Path) -> Result<Option<BTreeMap<String, Profi
         merged.extend(profiles);
     }
 
-    // Also scan all *.yml files at root (repos may split profiles across files)
+    // Also scan all *.yml files at root (repos may split profiles across files).
+    // Sorted so that a name defined twice resolves the same way on every machine.
     let entries = match std::fs::read_dir(source_dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -76,6 +97,7 @@ fn load_profiles_file(source_dir: &Path) -> Result<Option<BTreeMap<String, Profi
             })
         }
     };
+    let mut paths = Vec::new();
     for entry in entries {
         let entry = entry.with_context(|| {
             format!(
@@ -87,9 +109,13 @@ fn load_profiles_file(source_dir: &Path) -> Result<Option<BTreeMap<String, Profi
         if path.extension().and_then(|e| e.to_str()) == Some("yml")
             && path.file_name().unwrap_or_default() != "profiles.yml"
         {
-            if let Some(profiles) = read_profiles(&path)? {
-                merged.extend(profiles);
-            }
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    for path in paths {
+        if let Some(profiles) = read_profiles(&path)? {
+            merged.extend(profiles);
         }
     }
 
@@ -117,36 +143,112 @@ fn available_profiles_with_builtins(
     Ok(profiles)
 }
 
+/// Resolve a profile name, a comma-separated list (`core,dev`), or `all` into
+/// an ordered, de-duplicated skill list. `extends` is followed recursively.
 pub fn resolve_profile(name: &str, source_dir: &Path) -> anyhow::Result<ResolvedProfile> {
-    if name == "all" {
-        let mut skills = Vec::new();
-        for group in super::skill_groups(source_dir) {
-            for skill in super::skills_in_group(source_dir, &group) {
-                skills.push((group.clone(), skill));
-            }
-        }
-        return Ok(ResolvedProfile {
-            name: "all".to_string(),
-            description: "All available skills".to_string(),
-            skills,
+    let names: Vec<&str> = name
+        .split(',')
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .collect();
+    if names.is_empty() {
+        anyhow::bail!("Profile name is empty");
+    }
+    // `all` alone needs no profiles file, so a broken one does not block it.
+    let profiles = if names == ["all"] {
+        BTreeMap::new()
+    } else {
+        available_profiles(source_dir)?
+    };
+
+    let mut skills = Vec::new();
+    let mut descriptions = Vec::new();
+    let mut done = std::collections::HashSet::new();
+    for profile in &names {
+        let mut chain = Vec::new();
+        collect_profile_skills(
+            profile,
+            &profiles,
+            source_dir,
+            &mut chain,
+            &mut done,
+            &mut skills,
+        )?;
+        descriptions.push(match profiles.get(*profile) {
+            Some(def) => def.description.clone(),
+            None => "All available skills".to_string(),
         });
     }
 
-    let profiles = available_profiles(source_dir)?;
+    Ok(ResolvedProfile {
+        name: names.join(","),
+        description: descriptions.join(" + "),
+        skills,
+    })
+}
+
+fn push_unique(skills: &mut Vec<(String, String)>, pair: (String, String)) {
+    if !skills.contains(&pair) {
+        skills.push(pair);
+    }
+}
+
+fn collect_profile_skills(
+    name: &str,
+    profiles: &BTreeMap<String, ProfileDef>,
+    source_dir: &Path,
+    chain: &mut Vec<String>,
+    done: &mut std::collections::HashSet<String>,
+    skills: &mut Vec<(String, String)>,
+) -> anyhow::Result<()> {
+    if chain.iter().any(|n| n == name) {
+        anyhow::bail!(
+            "Profile 'extends' cycle: {} -> {}",
+            chain.join(" -> "),
+            name
+        );
+    }
+    // Each profile contributes once; a diamond of `extends` would otherwise
+    // be walked once per path, which grows exponentially with depth.
+    if !done.insert(name.to_string()) {
+        return Ok(());
+    }
+
+    if name == "all" && !profiles.contains_key("all") {
+        for group in super::skill_groups(source_dir) {
+            for skill in super::skills_in_group(source_dir, &group) {
+                push_unique(skills, (group.clone(), skill));
+            }
+        }
+        return Ok(());
+    }
+
     let def = profiles.get(name).ok_or_else(|| {
         let available: Vec<_> = profiles
             .keys()
             .chain(std::iter::once(&"all".to_string()))
             .cloned()
             .collect();
-        anyhow::anyhow!(
-            "Unknown profile '{}'. Available: {}",
-            name,
-            available.join(", ")
-        )
+        match chain.last() {
+            Some(parent) => anyhow::anyhow!(
+                "Profile '{}' extends unknown profile '{}'. Available: {}",
+                parent,
+                name,
+                available.join(", ")
+            ),
+            None => anyhow::anyhow!(
+                "Unknown profile '{}'. Available: {}",
+                name,
+                available.join(", ")
+            ),
+        }
     })?;
 
-    let mut skills = Vec::new();
+    chain.push(name.to_string());
+    for parent in &def.extends {
+        collect_profile_skills(parent, profiles, source_dir, chain, done, skills)?;
+    }
+    chain.pop();
 
     for spec in &def.skills {
         let mut components = spec.split('/');
@@ -163,11 +265,7 @@ pub fn resolve_profile(name: &str, source_dir: &Path) -> anyhow::Result<Resolved
             .with_context(|| format!("Invalid group in profile '{}' skill '{}'", name, spec))?;
         crate::util::validate_name(skill_name)
             .with_context(|| format!("Invalid name in profile '{}' skill '{}'", name, spec))?;
-
-        let pair = (group.to_string(), skill_name.to_string());
-        if !skills.contains(&pair) {
-            skills.push(pair);
-        }
+        push_unique(skills, (group.to_string(), skill_name.to_string()));
     }
 
     for group in &def.groups {
@@ -180,18 +278,11 @@ pub fn resolve_profile(name: &str, source_dir: &Path) -> anyhow::Result<Resolved
                     skill, group, name
                 )
             })?;
-            let pair = (group.clone(), skill);
-            if !skills.contains(&pair) {
-                skills.push(pair);
-            }
+            push_unique(skills, (group.clone(), skill));
         }
     }
 
-    Ok(ResolvedProfile {
-        name: name.to_string(),
-        description: def.description.clone(),
-        skills,
-    })
+    Ok(())
 }
 
 pub fn list_profiles(source_dir: &Path) -> Result<Vec<(String, String, usize)>> {
@@ -309,5 +400,81 @@ mod tests {
                 ("group".to_string(), "expanded".to_string()),
             ]
         );
+    }
+
+    use std::fs;
+    use std::path::Path;
+
+    fn source(profiles_yml: &str) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        for (group, skill) in [("dev", "a"), ("dev", "b"), ("ops", "c")] {
+            let dir = tmp.path().join(group).join(skill);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("SKILL.md"), "---\nname: x\n---\n").unwrap();
+        }
+        fs::write(tmp.path().join("profiles.yml"), profiles_yml).unwrap();
+        tmp
+    }
+
+    fn names(dir: &Path, profile: &str) -> Vec<String> {
+        resolve_profile(profile, dir)
+            .unwrap()
+            .skills
+            .into_iter()
+            .map(|(g, s)| format!("{g}/{s}"))
+            .collect()
+    }
+
+    #[test]
+    fn extends_puts_parent_skills_first() {
+        let src = source("base:\n  skills: [dev/b]\nfull:\n  extends: base\n  groups: [ops]\n");
+        assert_eq!(names(src.path(), "full"), ["dev/b", "ops/c"]);
+    }
+
+    #[test]
+    fn extends_accepts_a_list_and_dedupes() {
+        let src =
+            source("x:\n  skills: [dev/a]\ny:\n  skills: [dev/a, dev/b]\nz:\n  extends: [x, y]\n");
+        assert_eq!(names(src.path(), "z"), ["dev/a", "dev/b"]);
+    }
+
+    #[test]
+    fn comma_list_unions_profiles_in_order() {
+        let src = source("x:\n  skills: [ops/c]\ny:\n  skills: [dev/a, ops/c]\n");
+        let resolved = resolve_profile("x, y", src.path()).unwrap();
+        assert_eq!(resolved.name, "x,y");
+        assert_eq!(names(src.path(), "x,y"), ["ops/c", "dev/a"]);
+    }
+
+    #[test]
+    fn deep_extends_diamond_resolves_quickly() {
+        let mut yml = String::from("p40:\n  skills: [dev/a]\n");
+        for i in 0..40 {
+            yml.push_str(&format!("p{i}:\n  extends: [p{n}, p{n}]\n", n = i + 1));
+        }
+        let src = source(&yml);
+        let started = std::time::Instant::now();
+        assert_eq!(names(src.path(), "p0"), ["dev/a"]);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn extends_cycle_is_an_error() {
+        let src = source("x:\n  extends: y\ny:\n  extends: x\n");
+        let err = resolve_profile("x", src.path()).err().unwrap().to_string();
+        assert!(err.contains("cycle"), "{err}");
+    }
+
+    #[test]
+    fn unknown_parent_names_the_child() {
+        let src = source("x:\n  extends: nope\n");
+        let err = resolve_profile("x", src.path()).err().unwrap().to_string();
+        assert!(err.contains("'x' extends unknown profile 'nope'"), "{err}");
+    }
+
+    #[test]
+    fn extends_all_includes_every_skill() {
+        let src = source("x:\n  extends: all\n");
+        assert_eq!(names(src.path(), "x"), ["dev/a", "dev/b", "ops/c"]);
     }
 }
