@@ -323,3 +323,57 @@ fn ambiguous_or_missing_skill_name_is_rejected() {
     });
     assert!(find_skill_path(&dup, "git-commit-pr").is_err());
 }
+
+#[test]
+fn adopt_keeps_identical_copies_and_backs_up_others() {
+    let fx = Fixture::new("[env]\nagents = [\"claude\", \"codex\"]\n[skills]\n");
+    let gh = FakeGh::new();
+    // claude: plain gh install (exec bit dropped) is adopted in place;
+    // codex: locally edited copy is moved aside and reinstalled
+    gh.install_skill("a/b", "skills/pdf", COMMIT_A, &fx.claude)
+        .unwrap();
+    gh.install_skill("a/b", "skills/pdf", COMMIT_A, &fx.codex)
+        .unwrap();
+    fs::write(fx.codex.join("pdf/scripts/run.sh"), "echo edited\n").unwrap();
+    fx.set_manifest(
+        "[env]\nagents = [\"claude\", \"codex\"]\n[skills]\npdf = { github = \"a/b\", path = \"skills/pdf\" }\n",
+    );
+
+    let env = fx.env(&gh);
+    let adopted = env.adopt("pdf").unwrap();
+    assert_eq!(adopted.len(), 2);
+    let (_, codex_backup) = adopted
+        .iter()
+        .find(|(a, _)| *a == SkillAgent::Codex)
+        .unwrap();
+    let backup = codex_backup.as_ref().unwrap();
+    assert_eq!(
+        fs::read_to_string(backup.join("scripts/run.sh")).unwrap(),
+        "echo edited\n"
+    );
+    assert!(adopted
+        .iter()
+        .any(|(a, b)| *a == SkillAgent::Claude && b.is_none()));
+    assert!(Marker::read(&fx.claude.join("pdf")).is_some());
+
+    let plan = env.sync(&SyncOptions::default()).unwrap();
+    assert_eq!(plan.ops.len(), 1);
+    assert_eq!(plan.ops[0].agent, SkillAgent::Codex);
+    assert_eq!(
+        fs::read_to_string(fx.codex.join("pdf/scripts/run.sh")).unwrap(),
+        "echo run\n"
+    );
+    let mode = fs::metadata(fx.claude.join("pdf/scripts/run.sh"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_ne!(mode & 0o111, 0);
+    assert!(env.sync(&SyncOptions::default()).unwrap().is_empty());
+}
+
+#[test]
+fn adopt_requires_an_unmanaged_copy() {
+    let fx = Fixture::new("[skills]\npdf = { github = \"a/b\", path = \"skills/pdf\" }\n");
+    let gh = FakeGh::new();
+    assert!(fx.env(&gh).adopt("pdf").is_err());
+}

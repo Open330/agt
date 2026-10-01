@@ -1,5 +1,6 @@
 mod cmd;
 mod config;
+mod doctor;
 mod environment;
 mod frontmatter;
 mod gh;
@@ -147,6 +148,26 @@ enum Commands {
         #[arg(long, num_args = 0.., value_name = "NAME")]
         update: Option<Vec<String>>,
     },
+    /// Bring a skill installed by gh skill (or legacy agt) under agt.toml
+    Adopt {
+        /// Installed skill directory name
+        name: String,
+        /// Manage the user environment (~/.config/agt/agt.toml)
+        #[arg(short, long)]
+        global: bool,
+    },
+    /// Check installed skills: lock drift, duplicates, frontmatter, context budget
+    Doctor {
+        /// Output machine-readable JSON
+        #[arg(long)]
+        json: bool,
+        /// Token budget for skill descriptions loaded per agent
+        #[arg(long, default_value_t = 4000)]
+        budget: usize,
+        /// Do not ask `gh skill list` about other agent hosts
+        #[arg(long)]
+        no_gh: bool,
+    },
     /// Run prompt with skill matching
     Run {
         /// The prompt to execute
@@ -199,6 +220,12 @@ fn main() {
             frozen,
         } => cmd::env::sync(global, check, frozen),
         Commands::Lock { global, update } => cmd::env::lock(global, update),
+        Commands::Adopt { name, global } => cmd::env::adopt(global, &name),
+        Commands::Doctor {
+            json,
+            budget,
+            no_gh,
+        } => doctor::execute(json, budget, no_gh),
         Commands::Run { prompt, skill, llm } => {
             cmd::run::execute(&prompt.join(" "), skill.as_deref(), llm.as_deref())
         }

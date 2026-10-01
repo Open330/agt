@@ -80,7 +80,7 @@ fn normalize_skill_md(bytes: &[u8]) -> Result<Vec<u8>> {
     Ok(format!("{canonical}\n{}", body.trim_start_matches('\n')).into_bytes())
 }
 
-fn split_frontmatter(text: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_frontmatter(text: &str) -> Option<(&str, &str)> {
     let rest = text.trim_start().strip_prefix("---")?;
     let end = rest.find("\n---")?;
     let body = &rest[end + 4..];

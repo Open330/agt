@@ -75,7 +75,9 @@ agt는 `gh skill`과 경쟁하지 않고 그 위에 올라간다. GitHub에서 �
 - `--pin`으로 설치하면 `gh skill update`가 해당 스킬을 건너뛴다. 사용자가
   `gh skill update --all`을 실행해도 lock이 깨지지 않는다.
 - `gh skill list --json path,skillName,sourceURL,version,pinned,scope,agentHosts`로
-  40개 host 전체의 설치 현황을 얻을 수 있다. doctor 스캔에 쓴다.
+  40개 host 전체의 설치 현황을 얻을 수 있다(약 0.2초). 다만 **`~/.claude/skills` 아래의 심링크
+  스킬은 목록에 나오지 않는다.** 그래서 doctor는 Claude/Codex 경로를 직접 스캔하고
+  (심링크와 그룹 레이아웃 포함), 그 밖의 host만 `gh skill list`에서 합친다.
 
 ## 4. 사용자 시나리오
 
@@ -395,7 +397,7 @@ agt/src/
 | 단계 | 내용 | 완료 기준 |
 |---|---|---|
 | **M1** (MVP, 구현됨) | `[skills]` GitHub 소스만. `gh` 래퍼, `init/add/remove/sync/lock`, 프로젝트·전역(`-g`) 매니페스트, tree+integrity, `.agt-managed`, Claude+Codex | 빈 머신에서 `agt sync` 결과가 lock과 일치. 두 번째 실행에서 변경 0. 결과가 `gh skill list`에 pinned로 보임 |
-| **M2** | `agt doctor` D1·D2·D4·D6·D7·D9 (오프라인, 빠름), `agt adopt` | 1초 이내, `--json` 출력 |
+| **M2** (구현됨) | `agt doctor` D1·D2·D4·D6·D7·D9 (오프라인, 빠름), `agt adopt` | 1초 이내, `--json` 출력 |
 | **M3** | `outdated/update` 변경 리뷰(G4), 캐시, `sync --frozen/--check` + GitHub Action 예시, `agt skill install --from` deprecate | CI에서 drift 감지 |
 | **M4** | `[hooks]`, `[personas]`, 로컬 `path`/`link` 스킬 | settings.json에 관리 항목만 추가·제거 |
 | **M5** | doctor D3·D5·D8 (+`--deep`), 비 GitHub git 소스 | 실제 스킬 30개 이상 환경에서 오탐률 검토 |
@@ -403,6 +405,12 @@ agt/src/
 M1 구현 범위: `init/add/remove/sync/lock`(`lock --update`로 갱신). `[sources]` 별칭, 에이전트별
 `agents`, `-g` 전역 매니페스트, 캐시(`~/Library/Caches/agt/pkgs/<tree>/`, Linux는 `~/.cache`)를 포함한다.
 `profile`, 로컬 `path`, `adopt`, `outdated`, 변경 리뷰는 이후 단계로 미뤘다.
+
+M2 구현 메모: `agt doctor [--json] [--budget N] [--no-gh]`는 error가 있으면 exit 1로 끝난다.
+`agt adopt`는 비교하기 전에 lock의 `executables`에 실행 비트를 먼저 복구한다. 그래서 gh로
+설치한 일반적인 사본은 그 자리에서 편입되고, 실제로 내용이 다른 사본만 캐시의
+`adopted/`로 옮긴 뒤 다시 설치한다. D6은 Agent Skills 스펙(name ≤64, 소문자·하이픈,
+디렉터리명과 일치 / description 1–1024자)을 따른다.
 
 M1과 M2만으로도 `gh skill`과 구분되는 기능이 성립한다("선언·재현·진단").
 README 개편은 M2 시점에 한다.

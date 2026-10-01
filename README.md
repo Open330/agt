@@ -166,6 +166,16 @@ agt sync --check     # report drift (including local edits) without changing any
 agt lock --update    # move pins to the latest commit of each declared rev
 ```
 
+Check everything that is installed, whoever installed it, and bring
+`gh skill` installs under the manifest:
+
+```bash
+agt doctor           # lock drift, duplicate ids, frontmatter, non-executable
+                     # scripts, context budget, undeclared skills
+agt doctor --json    # machine-readable; exits 1 on errors
+agt adopt pdf        # declare and lock a skill installed by `gh skill install`
+```
+
 Use `-g` with any of these commands to manage the user environment in
 `~/.config/agt/agt.toml`. agt only modifies skill directories it installed
 (marked with `.agt-managed`), and restores executable bits that
