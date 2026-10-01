@@ -154,7 +154,11 @@ fn agent_skills_subdir(agent: SkillAgent) -> &'static str {
 /// directory target also gets one copy per git repository directly under it.
 fn target_skill_dirs(target: &config::TargetDef) -> Result<Vec<(PathBuf, Option<PathBuf>)>> {
     if target.path == "global" {
-        return Ok(vec![(config::skill_target(true, target.agent), None)]);
+        // Several Claude config dirs may share one skills dir through a symlink;
+        // resolve it so they also share one state file.
+        let dir = config::skill_target(true, target.agent);
+        let dir = fs::canonicalize(&dir).unwrap_or(dir);
+        return Ok(vec![(dir, None)]);
     }
     let root = config::resolve_home(&target.path);
     if !root.is_dir() {
