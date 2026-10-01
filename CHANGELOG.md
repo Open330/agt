@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (excluded via `.git/info/exclude`), and runs static copy only for the global
   target.
 - `agt gate <dir> -- <cmd>` runs a hook command only inside a directory tree.
+- A layer can list `skills = ["group/skill", ...]` instead of, or after, a
+  `profile`, for machine-local picks that do not belong in a shared profile.
 - `agt skill status [--global] [--json]` lists what agt installed in a skills
   directory with its layer and source, plus unmanaged and missing entries and
   any skills still in the old grouped layout. Installs and uninstalls record

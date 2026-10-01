@@ -99,7 +99,10 @@ personal = "~/workspace/agent-skills"
 team     = "~/work/agents"
 
 [stack.base]
-layers = [{ source = "personal", profile = "core,dev" }]
+layers = [
+  { source = "personal", profile = "core,dev" },
+  { source = "personal", skills = ["integrations/vault-secrets"] },  # one-off picks
+]
 static = ["personal"]            # 전역 타깃에 적용할 때 이 소스의 [[setup.copy]] 실행
 
 [stack.work]

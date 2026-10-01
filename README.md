@@ -101,7 +101,10 @@ personal = "~/workspace/agent-skills"
 team     = "~/work/agents"
 
 [stack.base]
-layers = [{ source = "personal", profile = "core,dev" }]
+layers = [
+  { source = "personal", profile = "core,dev" },
+  { source = "personal", skills = ["integrations/vault-secrets"] },  # one-off picks
+]
 static = ["personal"]            # run this source's [[setup.copy]] on the global target
 
 [stack.work]

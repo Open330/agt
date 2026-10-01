@@ -39,7 +39,12 @@ pub struct StackDef {
 pub struct LayerDef {
     pub source: String,
     /// Profile name or comma list, resolved in the source repository.
-    pub profile: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Individual `group/skill` entries, for a machine-local pick that does
+    /// not belong in the source repository's profiles. Added after `profile`.
+    #[serde(default)]
+    pub skills: Vec<String>,
     /// Let this layer replace a same-named skill from an earlier layer.
     #[serde(default, rename = "override")]
     pub override_earlier: bool,
@@ -165,10 +170,32 @@ impl LayersConfig {
         let mut desired: Vec<DesiredSkill> = Vec::new();
         for layer in self.layers(stack)? {
             let source_dir = self.source_dir(&layer.source)?;
-            let label = format!("{}:{}", layer.source, layer.profile);
-            let resolved = resolve_profile(&layer.profile, &source_dir)
-                .with_context(|| format!("Layer {label}"))?;
-            for (group, name) in resolved.skills {
+            let label = match &layer.profile {
+                Some(profile) => format!("{}:{}", layer.source, profile),
+                None => format!("{}:skills", layer.source),
+            };
+            let mut pairs = match &layer.profile {
+                Some(profile) => {
+                    resolve_profile(profile, &source_dir)
+                        .with_context(|| format!("Layer {label}"))?
+                        .skills
+                }
+                None if layer.skills.is_empty() => bail!(
+                    "Layer from source '{}' needs a `profile` or `skills`",
+                    layer.source
+                ),
+                None => Vec::new(),
+            };
+            for spec in &layer.skills {
+                let (group, name) = spec.split_once('/').with_context(|| {
+                    format!("Layer {label}: skill '{spec}' must be `group/skill`")
+                })?;
+                let pair = (group.to_string(), name.to_string());
+                if !pairs.contains(&pair) {
+                    pairs.push(pair);
+                }
+            }
+            for (group, name) in pairs {
                 let skill = DesiredSkill {
                     name: name.clone(),
                     layer: label.clone(),
@@ -283,6 +310,27 @@ mod tests {
             names(&cfg.desired_skills("work").unwrap()),
             ["commit=team:clash"]
         );
+    }
+
+    #[test]
+    fn layer_can_pick_individual_skills() {
+        let tmp = fixture();
+        let cfg = config(&base_toml(
+            tmp.path(),
+            "{ source = \"personal\", skills = [\"dev/review\"] }",
+        ));
+        assert_eq!(
+            names(&cfg.desired_skills("work").unwrap()),
+            ["commit=personal:core", "review=personal:skills"]
+        );
+    }
+
+    #[test]
+    fn layer_without_profile_or_skills_is_rejected() {
+        let tmp = fixture();
+        let cfg = config(&base_toml(tmp.path(), "{ source = \"personal\" }"));
+        let err = cfg.desired_skills("work").err().unwrap().to_string();
+        assert!(err.contains("needs a `profile` or `skills`"), "{err}");
     }
 
     #[test]
