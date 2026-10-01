@@ -77,6 +77,23 @@ pub fn run(skills: &[InstalledSkill], scopes: &[ManagedScope], opts: &Options) -
             );
             continue;
         }
+        if skill.grouped {
+            let flag = if skill.scope == ScopeKind::User {
+                " -g"
+            } else {
+                ""
+            };
+            findings.push(
+                Finding::new(
+                    "D10",
+                    Severity::Warn,
+                    "grouped layout (<group>/<skill>) is not loaded by Claude Code",
+                )
+                .at(skill)
+                .hint(format!("agt skill migrate{flag} moves it to the flat path")),
+            );
+            continue;
+        }
         lock_drift(skill, scopes, &mut findings);
         frontmatter(skill, &mut findings);
         scripts(skill, &mut findings);
@@ -332,6 +349,7 @@ fn unmanaged(skills: &[InstalledSkill], scopes: &[ManagedScope], out: &mut Vec<F
         for skill in skills.iter().filter(|s| {
             s.scope == scope.kind
                 && matches!(s.agent.as_str(), "claude" | "codex")
+                && !s.grouped
                 && !matches!(s.origin, Origin::Agt { .. })
         }) {
             let hint = if skill.origin.github().is_some() {
@@ -363,7 +381,7 @@ pub fn estimate_tokens(text: &str) -> usize {
 /// D4: description text every session preloads, per agent.
 fn budget(skills: &[InstalledSkill], limit: usize, out: &mut Vec<Finding>) {
     let mut per_agent: BTreeMap<&str, BTreeMap<PathBuf, (&str, usize)>> = BTreeMap::new();
-    for skill in skills.iter().filter(|s| !s.is_broken_link()) {
+    for skill in skills.iter().filter(|s| s.is_loaded()) {
         let Some(md) = &skill.skill_md else { continue };
         let Some((yaml, _)) = integrity::split_frontmatter(md) else {
             continue;
@@ -435,6 +453,7 @@ mod tests {
             "---\nname: good\ndescription: Use when the user asks for something good.\n---\n";
 
         write(&user.join("good"), good);
+        write(&user.join("group/legacy"), &good.replace("good", "legacy"));
         write(&user.join("dup"), &good.replace("good", "dup"));
         write(&project.join("dup"), &good.replace("good", "dup"));
         write(&user.join("noname"), "---\ndescription: short\n---\n");
@@ -501,6 +520,7 @@ mod tests {
         let findings = run(&skills, &scopes, &Options { budget: 10 });
 
         assert_eq!(ids(&findings, "good"), ["D9"]);
+        assert_eq!(ids(&findings, "legacy"), ["D10"]);
         assert_eq!(ids(&findings, "noname"), ["D6", "D6", "D9"]);
         assert_eq!(ids(&findings, "mismatch"), ["D6", "D9"]);
         assert_eq!(ids(&findings, "script"), ["D7", "D9"]);

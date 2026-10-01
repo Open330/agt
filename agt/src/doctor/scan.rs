@@ -67,6 +67,9 @@ pub struct InstalledSkill {
     #[serde(skip)]
     pub real: Option<PathBuf>,
     pub origin: Origin,
+    /// `<group>/<skill>` under a Claude skills dir, which Claude Code never loads.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub grouped: bool,
     #[serde(skip)]
     pub skill_md: Option<String>,
 }
@@ -74,6 +77,11 @@ pub struct InstalledSkill {
 impl InstalledSkill {
     pub fn is_broken_link(&self) -> bool {
         self.real.is_none()
+    }
+
+    /// Whether the agent actually loads this copy.
+    pub fn is_loaded(&self) -> bool {
+        !self.grouped && !self.is_broken_link()
     }
 }
 
@@ -118,16 +126,17 @@ pub fn scan(roots: &[ScanRoot]) -> Vec<InstalledSkill> {
                 continue;
             }
             if path.is_symlink() && !path.exists() {
-                out.push(skill(root, name, path));
+                out.push(skill(root, name, path, false));
                 continue;
             }
             if !path.is_dir() {
                 continue;
             }
             if path.join("SKILL.md").is_file() {
-                out.push(skill(root, name, path));
+                out.push(skill(root, name, path, false));
             } else if root.agent == SkillAgent::Claude {
-                // agt's grouped layout: <group>/<skill>/SKILL.md
+                // Legacy agt grouped layout: <group>/<skill>/SKILL.md. Listed so
+                // doctor can point at `agt skill migrate`; Claude Code ignores it.
                 let Ok(children) = fs::read_dir(&path) else {
                     continue;
                 };
@@ -136,7 +145,7 @@ pub fn scan(roots: &[ScanRoot]) -> Vec<InstalledSkill> {
                 for child in children {
                     if child.join("SKILL.md").is_file() {
                         let name = child.file_name().unwrap().to_string_lossy().into_owned();
-                        out.push(skill(root, name, child));
+                        out.push(skill(root, name, child, true));
                     }
                 }
             }
@@ -145,7 +154,7 @@ pub fn scan(roots: &[ScanRoot]) -> Vec<InstalledSkill> {
     out
 }
 
-fn skill(root: &ScanRoot, name: String, path: PathBuf) -> InstalledSkill {
+fn skill(root: &ScanRoot, name: String, path: PathBuf, grouped: bool) -> InstalledSkill {
     let real = fs::canonicalize(&path).ok();
     let skill_md = fs::read_to_string(path.join("SKILL.md")).ok();
     let origin = origin(&path, skill_md.as_deref());
@@ -156,6 +165,7 @@ fn skill(root: &ScanRoot, name: String, path: PathBuf) -> InstalledSkill {
         path,
         real,
         origin,
+        grouped,
         skill_md,
     }
 }
@@ -260,6 +270,7 @@ pub fn gh_hosts(seen: &[InstalledSkill]) -> Vec<InstalledSkill> {
                 name: l.skill_name,
                 real: fs::canonicalize(&l.path).ok(),
                 origin: origin(&l.path, skill_md.as_deref()),
+                grouped: false,
                 skill_md,
                 path: l.path,
             }
@@ -306,6 +317,8 @@ mod tests {
         let names: Vec<_> = found.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["dangling", "flat", "nested"]);
         assert!(found[0].is_broken_link());
+        assert!(!found[1].grouped && found[2].grouped);
+        assert!(!found[2].is_loaded());
 
         // Codex discovers only direct children.
         let codex = scan(&[ScanRoot {
