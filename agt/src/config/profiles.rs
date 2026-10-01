@@ -163,9 +163,17 @@ pub fn resolve_profile(name: &str, source_dir: &Path) -> anyhow::Result<Resolved
 
     let mut skills = Vec::new();
     let mut descriptions = Vec::new();
+    let mut done = std::collections::HashSet::new();
     for profile in &names {
         let mut chain = Vec::new();
-        collect_profile_skills(profile, &profiles, source_dir, &mut chain, &mut skills)?;
+        collect_profile_skills(
+            profile,
+            &profiles,
+            source_dir,
+            &mut chain,
+            &mut done,
+            &mut skills,
+        )?;
         descriptions.push(match profiles.get(*profile) {
             Some(def) => def.description.clone(),
             None => "All available skills".to_string(),
@@ -190,6 +198,7 @@ fn collect_profile_skills(
     profiles: &BTreeMap<String, ProfileDef>,
     source_dir: &Path,
     chain: &mut Vec<String>,
+    done: &mut std::collections::HashSet<String>,
     skills: &mut Vec<(String, String)>,
 ) -> anyhow::Result<()> {
     if chain.iter().any(|n| n == name) {
@@ -198,6 +207,11 @@ fn collect_profile_skills(
             chain.join(" -> "),
             name
         );
+    }
+    // Each profile contributes once; a diamond of `extends` would otherwise
+    // be walked once per path, which grows exponentially with depth.
+    if !done.insert(name.to_string()) {
+        return Ok(());
     }
 
     if name == "all" && !profiles.contains_key("all") {
@@ -232,7 +246,7 @@ fn collect_profile_skills(
 
     chain.push(name.to_string());
     for parent in &def.extends {
-        collect_profile_skills(parent, profiles, source_dir, chain, skills)?;
+        collect_profile_skills(parent, profiles, source_dir, chain, done, skills)?;
     }
     chain.pop();
 
@@ -430,6 +444,18 @@ mod tests {
         let resolved = resolve_profile("x, y", src.path()).unwrap();
         assert_eq!(resolved.name, "x,y");
         assert_eq!(names(src.path(), "x,y"), ["ops/c", "dev/a"]);
+    }
+
+    #[test]
+    fn deep_extends_diamond_resolves_quickly() {
+        let mut yml = String::from("p40:\n  skills: [dev/a]\n");
+        for i in 0..40 {
+            yml.push_str(&format!("p{i}:\n  extends: [p{n}, p{n}]\n", n = i + 1));
+        }
+        let src = source(&yml);
+        let started = std::time::Instant::now();
+        assert_eq!(names(src.path(), "p0"), ["dev/a"]);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]

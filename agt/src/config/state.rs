@@ -56,8 +56,25 @@ impl InstallState {
     pub fn load(skills_dir: &Path) -> Result<Self> {
         let path = state_path(skills_dir);
         match fs::read_to_string(&path) {
-            Ok(content) => serde_json::from_str(&content)
-                .with_context(|| format!("Invalid agt state file {}", path.display())),
+            Ok(content) => {
+                let mut state: Self = serde_json::from_str(&content)
+                    .with_context(|| format!("Invalid agt state file {}", path.display()))?;
+                // Keys become paths under the skills dir. A state file can come
+                // from a cloned repository, so anything but a plain skill name
+                // (`../x`, an absolute path) is dropped rather than acted on.
+                let before = state.skills.len();
+                state
+                    .skills
+                    .retain(|name, _| super::is_skill_dir_name(name));
+                if state.skills.len() != before {
+                    crate::ui::warn(&format!(
+                        "Ignored {} invalid entries in {}",
+                        before - state.skills.len(),
+                        path.display()
+                    ));
+                }
+                Ok(state)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self {
                 version: STATE_VERSION,
                 ..Self::default()
@@ -76,14 +93,10 @@ impl InstallState {
             }
             return Ok(());
         }
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, serde_json::to_string_pretty(self)? + "\n")
-            .with_context(|| format!("Failed to write {}", tmp.display()))?;
-        fs::rename(&tmp, &path).with_context(|| format!("Failed to write {}", path.display()))?;
-        Ok(())
+        // A unique temporary file and an atomic rename: a symlink planted at
+        // a predictable temp name cannot redirect the write.
+        super::write_json_atomically(&path, self)
+            .with_context(|| format!("Failed to write {}", path.display()))
     }
 
     pub fn record(&mut self, name: &str, record: SkillRecord) {
@@ -115,6 +128,39 @@ mod tests {
             state_path(Path::new("/home/u/.claude/skills")),
             PathBuf::from("/home/u/.claude/agt-state.json")
         );
+    }
+
+    #[test]
+    fn keys_that_are_not_skill_names_are_dropped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills = tmp.path().join(".claude/skills");
+        fs::create_dir_all(&skills).unwrap();
+        let entry = r#"{"layer":"x","source":"/s","origin":"g/a","mode":"symlink","applied":true}"#;
+        fs::write(
+            state_path(&skills),
+            format!(r#"{{"version":1,"skills":{{"ok-name":{entry},"../../../home/.zshrc":{entry},"/etc/passwd":{entry}}}}}"#),
+        )
+        .unwrap();
+        let state = InstallState::load(&skills).unwrap();
+        assert_eq!(state.skills.keys().collect::<Vec<_>>(), ["ok-name"]);
+    }
+
+    #[test]
+    fn save_does_not_follow_a_planted_temp_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills = tmp.path().join(".claude/skills");
+        fs::create_dir_all(&skills).unwrap();
+        let victim = tmp.path().join("victim");
+        fs::write(&victim, "keep me").unwrap();
+        let planted = state_path(&skills).with_extension("json.tmp");
+        std::os::unix::fs::symlink(&victim, planted).unwrap();
+
+        let mut state = InstallState::default();
+        state.record("a", record("core"));
+        state.save(&skills).unwrap();
+
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me");
+        assert_eq!(InstallState::load(&skills).unwrap().skills.len(), 1);
     }
 
     #[test]

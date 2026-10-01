@@ -310,6 +310,17 @@ fn replace_block(existing: &str, block: &str) -> String {
     text
 }
 
+/// The `.claude` or `skills` component of a directory target's skills dir when
+/// it is a symlink. A repository could point either one outside itself, and
+/// apply would then link, prune and write state there.
+fn symlinked_component(skills_dir: &Path) -> Option<PathBuf> {
+    let parent = skills_dir.parent()?;
+    [parent, skills_dir]
+        .into_iter()
+        .find(|p| fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()))
+        .map(Path::to_path_buf)
+}
+
 /// Resolve symlinks in the longest existing prefix so that a skills dir that
 /// does not exist yet still compares equal to the same dir reached another way.
 fn normalize(path: &Path) -> PathBuf {
@@ -385,6 +396,16 @@ pub fn execute(only: Option<&str>, dry_run: bool, check: bool) -> Result<()> {
         );
         let desired = cfg.desired_skills(&target.stack)?;
         for (skills_dir, repo) in target_skill_dirs(target)? {
+            if target.path != "global" {
+                if let Some(link) = symlinked_component(&skills_dir) {
+                    ui::warn(&format!(
+                        "Skipping {}: {} is a symlink",
+                        skills_dir.display(),
+                        link.display()
+                    ));
+                    continue;
+                }
+            }
             let mut state = InstallState::load(&skills_dir)?;
             let actions = plan_dir(&skills_dir, &desired, &state);
             pending += actions.iter().filter(|a| a.changes()).count();
@@ -588,6 +609,24 @@ mod tests {
         update_git_exclude(&repo, &skills_dir, &state).unwrap();
         let exclude = fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
         assert!(!exclude.contains("/.claude/skills/a"), "{exclude}");
+    }
+
+    #[test]
+    fn symlinked_claude_or_skills_dir_is_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(outside.join("skills")).unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        symlink(&outside, repo.join(".claude")).unwrap();
+        assert_eq!(
+            symlinked_component(&repo.join(".claude/skills")),
+            Some(repo.join(".claude"))
+        );
+
+        let clean = tmp.path().join("clean/.claude/skills");
+        fs::create_dir_all(&clean).unwrap();
+        assert_eq!(symlinked_component(&clean), None);
     }
 
     #[test]
