@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Declarative environments: `agt init`, `agt add skill`, `agt remove`,
+  `agt sync [--check|--frozen]`, and `agt lock [--update]` manage skills
+  declared in `agt.toml` and pinned to commit and tree SHAs in `agt.lock`.
+  `-g` manages the user environment in `~/.config/agt/agt.toml`. GitHub
+  content is fetched with `gh skill install`; agt restores the executable
+  bits it drops and only touches directories marked `.agt-managed`.
+
 ### Changed
 - Claude skills now install flat (`<skills-dir>/<skill>`) instead of
   `<skills-dir>/<group>/<skill>`, which Claude Code never loaded. Installing a
