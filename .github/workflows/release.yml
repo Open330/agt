@@ -8,8 +8,10 @@ name: Release
 # The Gitea mirror (jiunbae/agt) keeps .gitea/workflows/release.yml as a
 # manual fallback; it no longer fires on tag pushes.
 #
-# Required secrets:
-#   NPM_TOKEN  npmjs.com automation token with publish rights on @open330/*
+# npm publishing uses trusted publishing (OIDC): each @open330/agt* package
+# trusts this repository's release.yml, so no npm token secret is needed and
+# every publish carries provenance. Configure a new package with
+#   npm trust github <package> --repo Open330/agt --file release.yml
 # GITHUB_TOKEN (built in) uploads the release assets.
 
 on:
@@ -183,6 +185,9 @@ jobs:
     needs: [validate-version, build]
     runs-on: ubuntu-latest
     if: ${{ needs.validate-version.outputs.should_publish == 'true' }}
+    permissions:
+      contents: read
+      id-token: write  # npm trusted publishing
     steps:
       - uses: actions/checkout@v4
 
@@ -202,30 +207,20 @@ jobs:
           done
           ls -la npm/platforms/*/bin/agt
 
+      # Trusted publishing needs npm >= 11.5.1, which Node 24 bundles. No
+      # registry-url: setup-node would write a token placeholder into .npmrc.
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: '24'
 
-      - name: Configure npm auth
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Check npm supports trusted publishing
         run: |
           set -euo pipefail
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "NPM_TOKEN secret is not set on this repository" >&2
-            exit 1
-          fi
-          # Granular access tokens (npm_mc... prefix) lack the user:read scope
-          # `npm whoami` needs, so the readback 401s even though publish works.
-          # Skip the check; `npm publish` surfaces real auth errors.
-          umask 077
-          printf '//registry.npmjs.org/:_authToken=%s\nalways-auth=true\n' \
-            "$NODE_AUTH_TOKEN" > ~/.npmrc
+          npm --version
+          node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); process.exit(a>11||(a==11&&(b>5||(b==5&&c>=1)))?0:1)' "$(npm --version)"
 
       - name: Publish platform packages
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           RELEASE_VERSION: ${{ needs.validate-version.outputs.version }}
         run: |
           set -euo pipefail
@@ -241,7 +236,6 @@ jobs:
 
       - name: Publish wrapper package
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           RELEASE_VERSION: ${{ needs.validate-version.outputs.version }}
         run: |
           set -euo pipefail

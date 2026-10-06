@@ -21,7 +21,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/open330/agt"
+    "url": "https://github.com/Open330/agt"
   },
   "keywords": ["agent", "skills", "personas", "cli", "ai", "claude-code", "codex"],
   "author": "open330",
