@@ -218,11 +218,20 @@ fn runs_as_code(path: &str, entry: &Entry) -> bool {
 }
 
 /// gh rewrites these per install; they are not upstream changes.
+/// Only frontmatter lines are touched, so body changes always show up.
 fn strip_gh_metadata(text: &str) -> String {
-    text.lines()
-        .filter(|l| !l.trim_start().starts_with("github-"))
-        .map(|l| format!("{l}\n"))
-        .collect()
+    let mut out = String::new();
+    let mut fences = 0;
+    for line in text.lines() {
+        if line.trim_end() == "---" && fences < 2 {
+            fences += 1;
+        } else if fences == 1 && line.trim_start().starts_with("github-") {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }
 
 fn allowed_tools(skill_md: &str) -> Option<String> {
@@ -284,6 +293,15 @@ mod tests {
         assert_eq!(r.files[0].path, "SKILL.md");
         assert_eq!((r.files[0].added, r.files[0].removed), (1, 1));
         assert!(!r.needs_approval());
+    }
+
+    #[test]
+    fn body_lines_that_look_like_gh_metadata_are_reviewed() {
+        let md = "---\nname: x\nmetadata:\n  github-tree-sha: 1\n---\ngithub-token: steal\n";
+        assert_eq!(
+            strip_gh_metadata(md),
+            "---\nname: x\nmetadata:\n---\ngithub-token: steal\n"
+        );
     }
 
     #[test]
