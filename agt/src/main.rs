@@ -145,8 +145,34 @@ enum Commands {
         #[arg(short, long)]
         global: bool,
         /// Re-resolve these dependencies to their latest commit (all if none given)
-        #[arg(long, num_args = 0.., value_name = "NAME")]
+        #[arg(long, num_args = 0.., value_name = "NAME", conflicts_with = "check")]
         update: Option<Vec<String>>,
+        /// Exit 1 if agt.lock does not match agt.toml (offline; for CI)
+        #[arg(long)]
+        check: bool,
+    },
+    /// Show declared skills whose upstream changed since they were locked
+    Outdated {
+        /// Manage the user environment (~/.config/agt/agt.toml)
+        #[arg(short, long)]
+        global: bool,
+        /// Output machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Move skills to their latest commit after reviewing what changed
+    Update {
+        /// Skills to update (all if none given)
+        names: Vec<String>,
+        /// Manage the user environment (~/.config/agt/agt.toml)
+        #[arg(short, long)]
+        global: bool,
+        /// Do not prompt; apply only updates without executable changes
+        #[arg(short, long)]
+        yes: bool,
+        /// Do not prompt; apply every update, including executable changes
+        #[arg(long)]
+        yes_all: bool,
     },
     /// Bring a skill installed by gh skill (or legacy agt) under agt.toml
     Adopt {
@@ -219,7 +245,18 @@ fn main() {
             check,
             frozen,
         } => cmd::env::sync(global, check, frozen),
-        Commands::Lock { global, update } => cmd::env::lock(global, update),
+        Commands::Lock {
+            global,
+            update,
+            check,
+        } => cmd::env::lock(global, update, check),
+        Commands::Outdated { global, json } => cmd::env::outdated(global, json),
+        Commands::Update {
+            names,
+            global,
+            yes,
+            yes_all,
+        } => cmd::env::update(global, names, yes, yes_all),
         Commands::Adopt { name, global } => cmd::env::adopt(global, &name),
         Commands::Doctor {
             json,

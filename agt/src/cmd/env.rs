@@ -1,6 +1,7 @@
 use crate::config::SkillAgent;
 use crate::environment::manifest::{edit, validate_repo, Scope};
-use crate::environment::{Action, Env, Plan, SyncOptions};
+use crate::environment::review::FileStatus;
+use crate::environment::{Action, Env, Plan, Status, SyncOptions, Update};
 use crate::gh::{Gh, GhClient, TreeEntry};
 use crate::{ui, util};
 use anyhow::{bail, Result};
@@ -200,12 +201,28 @@ pub fn sync(global: bool, check: bool, frozen: bool) -> Result<()> {
     run_sync(&scope, &opts)
 }
 
-pub fn lock(global: bool, update: Option<Vec<String>>) -> Result<()> {
+pub fn lock(global: bool, update: Option<Vec<String>>, check: bool) -> Result<()> {
     let gh = LazyGh::new();
     let env = Env::new(Scope::resolve(global)?, &gh)?;
     let manifest = env.load_manifest()?;
     let deps = manifest.deps()?;
     let mut lock = env.load_lock()?;
+    if check {
+        let stale = crate::environment::stale_entries(&deps, &lock, &BTreeSet::new());
+        if stale.is_empty() && env.scope.lock_path().exists() {
+            ui::success("agt.lock matches agt.toml");
+            return Ok(());
+        }
+        bail!(
+            "agt.lock is out of date{}. Run `agt lock{}` and commit the result.",
+            if stale.is_empty() {
+                String::new()
+            } else {
+                format!(" for: {}", stale.join(", "))
+            },
+            env.scope.flag()
+        );
+    }
     let refresh: BTreeSet<String> = match update {
         Some(names) if names.is_empty() => deps.iter().map(|d| d.name.clone()).collect(),
         Some(names) => {
@@ -232,6 +249,176 @@ pub fn lock(global: bool, update: Option<Vec<String>>) -> Result<()> {
     ));
     ui::hint(&format!("Run `agt sync{}` to install", env.scope.flag()));
     Ok(())
+}
+
+pub fn outdated(global: bool, json: bool) -> Result<()> {
+    let gh = LazyGh::new();
+    let env = Env::new(Scope::resolve(global)?, &gh)?;
+    let rows = env.outdated()?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    let short = |sha: &str| sha.chars().take(7).collect::<String>();
+    let mut pending = 0;
+    for row in &rows {
+        let locked = row
+            .locked
+            .as_deref()
+            .map(short)
+            .unwrap_or_else(|| "-".into());
+        let (mark, detail) = match &row.status {
+            Status::Current => ("=".dimmed(), "up to date".dimmed().to_string()),
+            Status::CommitOnly { rev, commit } => (
+                "=".dimmed(),
+                format!("{rev} moved to {} (skill unchanged)", short(commit))
+                    .dimmed()
+                    .to_string(),
+            ),
+            Status::Changed { rev, commit } => {
+                pending += 1;
+                ("↑".green(), format!("{locked} → {} ({rev})", short(commit)))
+            }
+            Status::Missing { rev, commit } => {
+                pending += 1;
+                (
+                    "!".red(),
+                    format!("removed upstream at {rev} ({})", short(commit)),
+                )
+            }
+            Status::Pinned => ("·".dimmed(), "pinned to a commit".dimmed().to_string()),
+            Status::NotLocked => {
+                pending += 1;
+                ("?".yellow(), "not locked yet; run `agt lock`".to_string())
+            }
+        };
+        println!("  {mark} {:<24} {detail}", row.name);
+    }
+    if pending > 0 {
+        ui::hint(&format!(
+            "Run `agt update{}` to review and apply",
+            env.scope.flag()
+        ));
+    } else {
+        ui::success("Everything is up to date");
+    }
+    Ok(())
+}
+
+pub fn update(global: bool, names: Vec<String>, yes: bool, yes_all: bool) -> Result<()> {
+    let gh = LazyGh::new();
+    let env = Env::new(Scope::resolve(global)?, &gh)?;
+    let names: BTreeSet<String> = names.into_iter().collect();
+    let updates = env.plan_updates(&names)?;
+    if updates.is_empty() {
+        ui::success("Everything is up to date");
+        return Ok(());
+    }
+
+    let interactive = !yes && console::Term::stderr().is_term();
+    let mut approved = Vec::new();
+    let mut held = Vec::new();
+    for update in updates {
+        print_update(&update);
+        let needs_approval = update.review.as_ref().is_some_and(|r| r.needs_approval());
+        let apply = if !needs_approval || yes_all {
+            true
+        } else if interactive {
+            ask_apply(&update)?
+        } else {
+            false
+        };
+        if apply {
+            approved.push(update.new);
+        } else {
+            held.push(update.new.name);
+        }
+    }
+
+    if !approved.is_empty() {
+        let plan = env.apply_updates(approved)?;
+        print_plan(&plan, false);
+    }
+    if !held.is_empty() {
+        bail!(
+            "Not applied: {}. Executable content changed; review it interactively or pass --yes-all.",
+            held.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn print_update(update: &Update) {
+    let short = |sha: &str| sha.chars().take(7).collect::<String>();
+    println!(
+        "\n{} {} → {} ({})",
+        update.new.name.bold(),
+        short(&update.old.commit),
+        short(&update.new.commit),
+        update.new.rev
+    );
+    let Some(review) = &update.review else {
+        println!("    {}", "skill content unchanged".dimmed());
+        return;
+    };
+    for file in &review.files {
+        let status = match file.status {
+            FileStatus::Added => "added".green(),
+            FileStatus::Removed => "removed".red(),
+            FileStatus::Modified => "modified".yellow(),
+            FileStatus::Mode => "mode".yellow(),
+        };
+        let exec = if file.executable {
+            format!("  {}", "⚠ executable".yellow())
+        } else {
+            String::new()
+        };
+        println!(
+            "    {:<8} {:<40} {}{exec}",
+            status,
+            file.path,
+            format!("+{} −{}", file.added, file.removed).dimmed()
+        );
+    }
+    if let Some((before, after)) = &review.allowed_tools {
+        println!(
+            "    {} allowed-tools: {} → {}",
+            "⚠".yellow(),
+            before.as_deref().unwrap_or("(none)"),
+            after.as_deref().unwrap_or("(none)")
+        );
+    }
+    for risk in &review.risks {
+        println!(
+            "    {} {} ({}): {}",
+            "⚠".red(),
+            risk.path,
+            risk.reason,
+            risk.line.dimmed()
+        );
+    }
+}
+
+fn ask_apply(update: &Update) -> Result<bool> {
+    let options = ["Apply", "Skip", "Show full diff"];
+    loop {
+        let choice = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
+            .with_prompt(format!("Update {}?", update.new.name))
+            .items(options)
+            .default(1)
+            .interact()?;
+        match choice {
+            0 => return Ok(true),
+            1 => return Ok(false),
+            _ => {
+                if let Some(review) = &update.review {
+                    for file in &review.files {
+                        print!("{}", file.diff);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn run_sync(scope: &Scope, opts: &SyncOptions) -> Result<()> {
@@ -261,7 +448,7 @@ fn print_plan(plan: &Plan, check: bool) {
     for op in &plan.ops {
         let (sign, label) = match op.action {
             Action::Install => ("+".green(), "install"),
-            Action::Replace => ("~".yellow(), "restore"),
+            Action::Replace => ("~".yellow(), "replace"),
             Action::Remove => ("-".red(), "remove"),
         };
         let label = if check {

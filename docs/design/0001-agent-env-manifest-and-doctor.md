@@ -398,7 +398,7 @@ agt/src/
 |---|---|---|
 | **M1** (MVP, 구현됨) | `[skills]` GitHub 소스만. `gh` 래퍼, `init/add/remove/sync/lock`, 프로젝트·전역(`-g`) 매니페스트, tree+integrity, `.agt-managed`, Claude+Codex | 빈 머신에서 `agt sync` 결과가 lock과 일치. 두 번째 실행에서 변경 0. 결과가 `gh skill list`에 pinned로 보임 |
 | **M2** (구현됨) | `agt doctor` D1·D2·D4·D6·D7·D9 (오프라인, 빠름), `agt adopt` | 1초 이내, `--json` 출력 |
-| **M3** | `outdated/update` 변경 리뷰(G4), 캐시, `sync --frozen/--check` + GitHub Action 예시, `agt skill install --from` deprecate | CI에서 drift 감지 |
+| **M3** (구현됨) | `outdated/update` 변경 리뷰(G4), 캐시, `sync --frozen/--check` + GitHub Action 예시, `agt skill install --from` deprecate | CI에서 drift 감지 |
 | **M4** | `[hooks]`, `[personas]`, 로컬 `path`/`link` 스킬 | settings.json에 관리 항목만 추가·제거 |
 | **M5** | doctor D3·D5·D8 (+`--deep`), 비 GitHub git 소스 | 실제 스킬 30개 이상 환경에서 오탐률 검토 |
 
@@ -411,6 +411,13 @@ M2 구현 메모: `agt doctor [--json] [--budget N] [--no-gh]`는 error가 있�
 설치한 일반적인 사본은 그 자리에서 편입되고, 실제로 내용이 다른 사본만 캐시의
 `adopted/`로 옮긴 뒤 다시 설치한다. D6은 Agent Skills 스펙(name ≤64, 소문자·하이픈,
 디렉터리명과 일치 / description 1–1024자)을 따른다.
+
+M3 구현 메모: CI 게이트는 `sync --frozen` 대신 `agt lock --check`(오프라인)로 했다. CI에는
+설치본이 없으므로 `sync --check`는 의미가 없고, `--frozen`은 실제로 설치까지 한다.
+`agt update`는 리뷰를 `similar`의 줄 diff로 만든다. `-y`는 "묻지 않음"이라 실행 파일이
+바뀐 업데이트는 보류하고, `--yes-all`일 때만 모두 적용한다. 보류된 것이 있으면 exit 1로 끝난다.
+`agt skill install --from`은 단일 스킬에만 deprecated 경고를 낸다. 원격 profile 설치는
+bootstrap(`setup.sh --core`)이 쓰므로 유지한다.
 
 M1과 M2만으로도 `gh skill`과 구분되는 기능이 성립한다("선언·재현·진단").
 README 개편은 M2 시점에 한다.
